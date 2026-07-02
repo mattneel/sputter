@@ -21,11 +21,17 @@
         "unknown command is named in the error")))
 
 (deftest not-yet-implemented
-  (dolist (cmd '("run" "repl" "test"))
-    (multiple-value-bind (out code) (h:run-cli (list cmd "x.sput"))
-      (ok (= code 1) (format nil "`sput ~a` exits 1 while unimplemented" cmd))
-      (ok (search "not implemented" out)
-          (format nil "`sput ~a` says so in prose" cmd)))))
+  (multiple-value-bind (out code) (h:run-cli '("test" "x.sput"))
+    (ok (= code 1) "`sput test` exits 1 while unimplemented")
+    (ok (search "not implemented" out) "`sput test` says so in prose")))
+
+(deftest run-boundaries
+  (multiple-value-bind (out code) (h:run-cli '("run" "no-such.sput"))
+    (ok (= code 1) "run on a missing file exits 1")
+    (ok (search "error: no such file" out)))
+  (multiple-value-bind (out code) (h:run-cli '("run"))
+    (ok (= code 1) "run with no file exits 1")
+    (ok (search "error" out))))
 
 (deftest fmt-and-expand-boundaries
   (multiple-value-bind (out code) (h:run-cli '("fmt" "no-such-file.sput"))

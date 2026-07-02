@@ -25,7 +25,14 @@ ever emits them.")
    ;; expand.lisp
    #:expand-module
    ;; print.lisp
-   #:print-module #:print-node #:*print-width*
+   #:print-module #:print-node #:*print-width* #:show-value
+   ;; plasma.lisp / emit.lisp — pipeline
+   #:lower-top-form #:validate-plasma #:emit-top-form #:eval-top-form
+   #:run-file #:mangle #:demangle-symbol
+   ;; prelude.lisp
+   #:reset-globals
+   ;; rt.lisp runtime API
+   #:sput-equal #:sput-panic #:sputter-panic-frames
    ;; node.lisp — the node model (SPEC §4)
    #:node #:node-p #:node-head #:node-meta #:node-args #:make-node
    #:meta #:meta-p #:meta-file #:meta-line #:meta-col #:meta-scopes

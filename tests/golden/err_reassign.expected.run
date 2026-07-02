@@ -1,0 +1,2 @@
+error: cannot reassign `x` (it is immutable — bind it with `var` to mutate)
+  at err_reassign.sput:2:3

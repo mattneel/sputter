@@ -1,0 +1,14 @@
+fn area(w: f64, h: f64) f64 {
+    w * h
+}
+
+println(area(3.0, 4.0));
+println(7 / 2);
+println(7.0 / 2);
+println("con" ++ "cat");
+let sign = if 0 < 1 { 1 } else { -1 };
+println(sign);
+var n = 0;
+while n < 3 { n += 1; }
+println(n);
+println(show(area));

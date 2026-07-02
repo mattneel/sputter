@@ -6,6 +6,28 @@
 
 (in-package #:sputter.impl)
 
+;;; --- the false singleton -----------------------------------------------------
+;;; Part of the value model (SPEC §5.5) but defined here: `scalarp` below needs
+;;; it, and everything in rt.lisp needs the node accessors. `false` is a
+;;; distinct singleton (Elixir model: nil /= false, both falsy) — CL NIL cannot
+;;; play both roles (§13.2). DEFVAR, not DEFPARAMETER: reloading this file must
+;;; not mint a second false.
+
+(defstruct (sput-false (:constructor %make-sput-false)))
+
+(defvar +sput-false+ (%make-sput-false)
+  "The unique runtime value of the Sputter literal `false`.")
+
+(defmethod print-object ((x sput-false) stream)
+  ;; Host-level debugging repr only; the user-facing renderer is `show` (I2).
+  (print-unreadable-object (x stream)
+    (write-string "sput-false" stream)))
+
+(declaim (inline truthy))
+(defun truthy (x)
+  "Sputter truthiness: `false` and `nil` are falsy; everything else is truthy."
+  (not (or (null x) (sput-false-p x))))
+
 ;;; --- meta ------------------------------------------------------------------
 
 (defstruct (meta (:constructor %make-meta))
@@ -45,7 +67,9 @@
       (eq x t) (sput-false-p x) (null x)))
 
 (defun arg-elem-p (x)
-  (or (node-p x) (scalarp x)))
+  ;; Non-keyword symbols are admitted for one internal reason: p.host_call
+  ;; carries a resolved CL symbol (SPEC §6). They are never surface scalars.
+  (or (node-p x) (scalarp x) (symbolp x)))
 
 (defun make-node (head args &key (meta (synthetic-meta)))
   "The one public node constructor. Meta defaults to synthetic."

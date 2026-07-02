@@ -66,8 +66,8 @@ the user-facing line (the *Waterline*).
 Working through the v0.1 milestones (SPEC.md §11):
 
 - [x] M0 — skeleton: node model, test harness, CLI shim
-- [ ] M1 — parse + print the macro-free core
-- [ ] M2 — lower + emit + run via SBCL
+- [x] M1 — parse + print the macro-free core
+- [x] M2 — lower + emit + run via SBCL
 - [ ] M3 — data (atoms, tagged, lists, records) + `switch` + pipelines
 - [ ] M4 — nodes as first-class values (`quote`, `dump`, `print`)
 - [ ] M5 — procedural macros (`macro fn`), hygiene

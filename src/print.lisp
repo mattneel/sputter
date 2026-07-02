@@ -418,6 +418,29 @@ multiline form; otherwise accept one long line (binary chains do not wrap)."
         (emit-stmt s stmt 0)
         (setf prev stmt)))))
 
+;;; --- show: runtime values as Sputter literals (SPEC §5.7) ---------------------
+
+(defun show-value (v)
+  "Runtime values rendered as Sputter literals; the REPL echoes through this.
+Records and tagged values complete the picture in M3."
+  (cond ((eq v t) "true")
+        ((null v) "nil")
+        ((sput-false-p v) "false")
+        ((integerp v) (format nil "~d" v))
+        ((floatp v) (float-literal-string v))
+        ((stringp v) (escape-string-literal v))
+        ((keywordp v) (concatenate 'string "." (symbol-name v)))
+        ((consp v) (format nil "[~{~a~^, ~}]" (mapcar #'show-value v)))
+        ((functionp v) (show-function v))
+        ((node-p v)
+         (format nil "<node ~(~a~)~@[ ~a~]>"
+                 (node-head v) (meta-span-string (node-meta v))))
+        (t "<host value>")))
+
+(defun show-function (f)
+  (multiple-value-bind (name arity) (host-function-info f)
+    (format nil "<fn ~a~@[/~d~]>" (or name "anon") arity)))
+
 (defun print-node (x)
   "Render one node (or scalar) as canonical surface syntax (SPEC §5.7 print)."
   (string-right-trim '(#\Newline)

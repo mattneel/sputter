@@ -32,6 +32,23 @@ commands:
     (format *error-output* "~%--- host backtrace (SPUTTER_HOST_BACKTRACE) ---~%")
     (host-print-backtrace c *error-output*)))
 
+(defun render-host-condition (c stream)
+  "Render recognizable host conditions escaping *user code* in Sputter prose.
+Returns true when handled; anything unrecognized is an implementation bug."
+  (typecase c
+    ((or undefined-function unbound-variable)
+     (let ((name (cell-error-name c)))
+       (when (and (symbolp name)
+                  (eq (symbol-package name) (find-package '#:sputter)))
+         (format stream "error: `~a` is not defined~%" (demangle-symbol name))
+         t)))
+    (type-error
+     (format stream "error: type mismatch: expected ~a, got ~a~%"
+             (sputter-type-name (type-error-expected-type c))
+             (show-value (type-error-datum c)))
+     t)
+    (t nil)))
+
 (defun call-with-error-boundary (thunk)
   (handler-case (funcall thunk)
     (sputter-error (c)
@@ -39,8 +56,9 @@ commands:
       (maybe-host-backtrace c)
       1)
     (error (c)
-      (format *error-output*
-              "error: internal error in the sput toolchain (this is a bug — set SPUTTER_HOST_BACKTRACE=1 for details)~%")
+      (unless (render-host-condition c *error-output*)
+        (format *error-output*
+                "error: internal error in the sput toolchain (this is a bug — set SPUTTER_HOST_BACKTRACE=1 for details)~%"))
       (maybe-host-backtrace c)
       1)))
 
@@ -102,6 +120,83 @@ commands:
                   *standard-output*)
     0))
 
+(defun cmd-run (args)
+  (let ((flags (remove-if-not #'flag-p args))
+        (files (remove-if #'flag-p args)))
+    (check-flags flags '("--echo-last") "run") ; --echo-last: golden-harness tool
+    (when (null files)
+      (error 'sputter-error :message "`sput run` needs at least one file"))
+    (reset-globals)
+    (let ((last nil))
+      (dolist (f files)
+        (setf last (run-file f)))
+      (when (member "--echo-last" flags :test #'string=)
+        (format *standard-output* "~a~%" (show-value last))))
+    0))
+
+;;; --- repl (SPEC §9) ---------------------------------------------------------------
+
+(defun repl-entry-complete-p (src)
+  "Balanced-brace heuristic: an entry is complete when it lexes and all
+brackets are balanced. A lex error counts as complete — it surfaces now."
+  (let ((tokens (handler-case (lex src :file "<repl>")
+                  (sputter-error () (return-from repl-entry-complete-p t)))))
+    (let ((depth 0))
+      (loop for tok across tokens
+            do (case (token-type tok)
+                 ((:lbrace :lparen :lbracket :dot-lbrace) (incf depth))
+                 ((:rbrace :rparen :rbracket) (decf depth))))
+      (<= depth 0))))
+
+(defun read-repl-entry (in out)
+  "Read one balanced-brace multiline entry. NIL at end of input."
+  (format out "sput> ")
+  (force-output out)
+  (let ((acc nil))
+    (loop
+      (let ((line (read-line in nil nil)))
+        (cond ((null line)
+               (return (and acc (format nil "~{~a~^~%~}" (reverse acc)))))
+              (t
+               (push line acc)
+               (let ((src (format nil "~{~a~^~%~}" (reverse acc))))
+                 (if (repl-entry-complete-p src)
+                     (return src)
+                     (progn (format out "  ... ")
+                            (force-output out))))))))))
+
+(defun eval-repl-entry (src)
+  "Parse one REPL entry (expression or statements) and evaluate it.
+Returns the value to echo."
+  (let ((parsed (handler-case (list :expr (parse-expression src :file "<repl>"))
+                  (sputter-parse-error ()
+                    (list :module (parse-module src :file "<repl>"))))))
+    (ecase (first parsed)
+      (:expr (eval-top-form (second parsed)))
+      (:module
+       (let ((value nil))
+         (dolist (s (second parsed) value)
+           (setf value (eval-top-form s))))))))
+
+(defun cmd-repl (args)
+  (declare (ignore args))
+  (reset-globals)
+  (format *standard-output* "Sputter v0.1 — Ctrl-D exits; rlwrap recommended.~%")
+  (loop
+    (let ((entry (read-repl-entry *standard-input* *standard-output*)))
+      (when (null entry) (return 0))
+      (when (plusp (length (string-trim '(#\Space #\Tab #\Newline) entry)))
+        (handler-case
+            (format *standard-output* "~a~%" (show-value (eval-repl-entry entry)))
+          (sputter-error (c)
+            (render-sputter-error c *error-output*)
+            (maybe-host-backtrace c))
+          (error (c)
+            (unless (render-host-condition c *error-output*)
+              (format *error-output*
+                      "error: internal error in the sput toolchain (this is a bug)~%"))
+            (maybe-host-backtrace c)))))))
+
 ;;; --- dispatch ----------------------------------------------------------------------
 
 (defun cli-dispatch (argv)
@@ -117,10 +212,13 @@ Everything written here is user-facing: Sputter prose only (I2)."
        (with-error-boundary () (cmd-fmt (rest argv))))
       ((string= command "expand")
        (with-error-boundary () (cmd-expand (rest argv))))
-      ((member command '("run" "repl" "test") :test #'string=)
+      ((string= command "run")
+       (with-error-boundary () (cmd-run (rest argv))))
+      ((string= command "repl")
+       (with-error-boundary () (cmd-repl (rest argv))))
+      ((string= command "test")
        (format *error-output*
-               "error: `sput ~a` is not implemented yet (it arrives with a later milestone)~%"
-               command)
+               "error: `sput test` is not implemented yet (it arrives with M7)~%")
        1)
       (t
        (format *error-output* "error: unknown command `~a`~%~%" command)
