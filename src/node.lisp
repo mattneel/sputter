@@ -37,7 +37,10 @@
   ;; Hygiene mark set (SPEC §5.8.5). Shaped for sets-of-scopes later.
   (scopes '() :type list)
   ;; Printer/expander-owned nodes with no source span.
-  (synthetic nil :type boolean))
+  (synthetic nil :type boolean)
+  ;; Internal (never exposed through meta()): the line of a statement's last
+  ;; token, parser-recorded so blank-line preservation sees closing braces.
+  (end-line nil :type (or null (integer 0))))
 
 (defun make-source-meta (file line col)
   (check-type file string)
@@ -68,8 +71,9 @@
 
 (defun arg-elem-p (x)
   ;; Non-keyword symbols are admitted for one internal reason: p.host_call
-  ;; carries a resolved CL symbol (SPEC §6). They are never surface scalars.
-  (or (node-p x) (scalarp x) (symbolp x)))
+  ;; carries a resolved CL symbol (SPEC §6); meta objects ride in p.lit when
+  ;; quote-lowering rebuilds nodes at runtime. Neither is a surface scalar.
+  (or (node-p x) (scalarp x) (symbolp x) (meta-p x)))
 
 (defun make-node (head args &key (meta (synthetic-meta)))
   "The one public node constructor. Meta defaults to synthetic."
@@ -85,6 +89,16 @@
   "Intern the string NAME as a case-sensitive keyword (`\"total\"` -> :|total|)."
   (check-type name string)
   (values (intern name :keyword)))
+
+;; Internally heads are reader-cased keywords (:ADD); the language's head
+;; atoms are lowercase (`.add`). These two bridge the boundary: every place
+;; a head crosses into user-land (head(), .head, dump) downcases, and
+;; node() construction upcases.
+(defun head-atom (head-kw)
+  (name-keyword (string-downcase (symbol-name head-kw))))
+
+(defun atom-head (atom-kw)
+  (values (intern (string-upcase (symbol-name atom-kw)) :keyword)))
 
 (defun make-ident (name &key (meta (synthetic-meta)))
   "Identifier node: head .ident, args [.name] (SPEC §4.1)."

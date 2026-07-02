@@ -7,7 +7,7 @@
 
 ;; Forward declarations for later files (print.lisp, emit.lisp): these are
 ;; called at runtime only; the declaims keep the compiler quiet at load.
-(declaim (ftype (function (t) string) show-value)
+(declaim (ftype (function (t) string) show-value print-node dump-string)
          (ftype (function (symbol) string) demangle-symbol))
 
 ;;; --- conditions (SPEC §8) ---------------------------------------------------
@@ -239,9 +239,10 @@ provenance, not identity). Returns a CL generalized boolean; sput-eq wraps."
              (rt-panic "tagged values expose .tag, not .~a" (symbol-name name))))
         ((node-p obj)
          (case name
-           (:|head| (node-head obj))
+           (:|head| (head-atom (node-head obj)))
            (:|args| (node-args obj))
-           (t (rt-panic "nodes expose .head and .args (.meta arrives in M4), not .~a"
+           (:|meta| (sput-meta obj))
+           (t (rt-panic "nodes expose .head, .meta, and .args, not .~a"
                         (symbol-name name)))))
         (t (rt-panic "~a has no fields (wanted .~a)"
                      (show-value obj) (symbol-name name)))))
@@ -263,6 +264,15 @@ provenance, not identity). Returns a CL generalized boolean; sput-eq wraps."
 (defun rt-no-match (v &optional file line col)
   (sput-panic (format nil "no switch arm matched ~a" (show-value v))
               :file file :line line :col col))
+
+(defun match-fields-p (x)
+  "Record patterns apply to records and to nodes (SPEC §4.4)."
+  (or (record-p x) (node-p x)))
+
+(defun match-field-has-p (x k)
+  (if (record-p x)
+      (record-has-p x k)
+      (member k '(:|head| :|args| :|meta|) :test #'eq)))
 
 ;;; --- list/collection builtins (prelude-registered) -------------------------------
 
@@ -297,6 +307,89 @@ provenance, not identity). Returns a CL generalized boolean; sput-eq wraps."
 (defun sput-check-listy (who xs)
   (unless (listp xs)
     (rt-panic "~a wants a list, got ~a" who (show-value xs))))
+
+;;; --- nodes as runtime values (SPEC §4.4, M4) --------------------------------------
+
+(defun lift-splice (v)
+  "Validate a bare-name splice inside a quote: nodes splice as nodes,
+scalars lift to literals; nothing else fits in a syntax tree."
+  (if (or (node-p v) (scalarp v))
+      v
+      (rt-panic "cannot splice ~a into a quote (nodes and scalars only; `...name` splices lists of nodes, M5)"
+                (show-value v))))
+
+(defun %rebuild-node (head meta args)
+  "Quote-lowering support: rebuild a node around spliced children."
+  (dolist (a args)
+    (unless (or (node-p a) (scalarp a))
+      (rt-panic "cannot splice ~a into a quote" (show-value a))))
+  (make-node head args :meta meta))
+
+(defun check-node (who x)
+  (unless (node-p x)
+    (rt-panic "~a wants a node, got ~a" who (show-value x)))
+  x)
+
+(defun sput-head (n) (head-atom (node-head (check-node "head" n))))
+
+(defun sput-args (n) (node-args (check-node "args" n)))
+
+(defun sput-meta (n)
+  "Node meta exposed as a record (SPEC §4.1's .{ .file, .line, .col,
+.scopes, .synthetic })."
+  (let ((m (node-meta (check-node "meta" n))))
+    (make-record :|file| (meta-file m)
+                 :|line| (meta-line m)
+                 :|col| (meta-col m)
+                 :|scopes| (copy-list (meta-scopes m))
+                 :|synthetic| (if (meta-synthetic m) t +sput-false+))))
+
+(defun sput-node-ctor (head args)
+  "node(head, args) — meta synthesized (SPEC §4.4). The atom `.add` maps to
+the internal head keyword."
+  (unless (keywordp head)
+    (rt-panic "node() wants an atom head, got ~a" (show-value head)))
+  (unless (listp args)
+    (rt-panic "node() wants a list of args, got ~a" (show-value args)))
+  (dolist (a args)
+    (unless (or (node-p a) (scalarp a))
+      (rt-panic "node args must be nodes or scalars, got ~a" (show-value a))))
+  (make-node (atom-head head) args))
+
+(defun sput-prewalk (x f)
+  "prewalk with runtime validation: F must return nodes or scalars."
+  (let ((y (funcall f x)))
+    (unless (or (node-p y) (scalarp y))
+      (rt-panic "prewalk fn returned ~a (nodes and scalars only)" (show-value y)))
+    (if (node-p y)
+        (make-node (node-head y)
+                   (mapcar (lambda (a) (sput-prewalk a f)) (node-args y))
+                   :meta (node-meta y))
+        y)))
+
+(defun sput-postwalk (x f)
+  (let* ((walked (if (node-p x)
+                     (make-node (node-head x)
+                                (mapcar (lambda (a) (sput-postwalk a f))
+                                        (node-args x))
+                                :meta (node-meta x))
+                     x))
+         (y (funcall f walked)))
+    (unless (or (node-p y) (scalarp y))
+      (rt-panic "postwalk fn returned ~a (nodes and scalars only)" (show-value y)))
+    y))
+
+(defun sput-print (x)
+  "print(node) -> str: canonical surface syntax (SPEC §5.7)."
+  (unless (or (node-p x) (scalarp x))
+    (rt-panic "print wants a node, got ~a" (show-value x)))
+  (print-node x))
+
+(defun sput-dump (x)
+  "dump(node) -> str: the node as a Sputter data literal (SPEC §5.7)."
+  (unless (or (node-p x) (scalarp x))
+    (rt-panic "dump wants a node, got ~a" (show-value x)))
+  (dump-string x))
 
 (defun sput-index (obj i)
   (cond ((and (listp obj) (integerp i))

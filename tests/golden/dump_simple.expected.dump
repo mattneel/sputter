@@ -1,0 +1,26 @@
+.{ .head = .let, .meta = .{ .file = "dump_simple.sput", .line = 1, .col = 1, .scopes = [], .synthetic = false }, .args = [
+    .{ .head = .ident, .meta = .{ .file = "dump_simple.sput", .line = 1, .col = 5, .scopes = [], .synthetic = false }, .args = [.x] },
+    nil,
+    .{ .head = .add, .meta = .{ .file = "dump_simple.sput", .line = 1, .col = 15, .scopes = [], .synthetic = false }, .args = [
+        .{ .head = .ident, .meta = .{ .file = "dump_simple.sput", .line = 1, .col = 9, .scopes = [], .synthetic = false }, .args = [.total] },
+        .{ .head = .mul, .meta = .{ .file = "dump_simple.sput", .line = 1, .col = 21, .scopes = [], .synthetic = false }, .args = [
+            .{ .head = .ident, .meta = .{ .file = "dump_simple.sput", .line = 1, .col = 17, .scopes = [], .synthetic = false }, .args = [.tax] },
+            2,
+        ]},
+    ]},
+]}
+
+.{ .head = .fn, .meta = .{ .file = "dump_simple.sput", .line = 2, .col = 1, .scopes = [], .synthetic = false }, .args = [
+    .{ .head = .ident, .meta = .{ .file = "dump_simple.sput", .line = 2, .col = 4, .scopes = [], .synthetic = false }, .args = [.twice] },
+    .{ .head = .param, .meta = .{ .file = "dump_simple.sput", .line = 2, .col = 10, .scopes = [], .synthetic = false }, .args = [
+        .{ .head = .ident, .meta = .{ .file = "dump_simple.sput", .line = 2, .col = 10, .scopes = [], .synthetic = false }, .args = [.n] },
+        nil,
+    ]},
+    nil,
+    .{ .head = .block, .meta = .{ .file = "dump_simple.sput", .line = 2, .col = 13, .scopes = [], .synthetic = false }, .args = [
+        .{ .head = .mul, .meta = .{ .file = "dump_simple.sput", .line = 2, .col = 17, .scopes = [], .synthetic = false }, .args = [
+            .{ .head = .ident, .meta = .{ .file = "dump_simple.sput", .line = 2, .col = 15, .scopes = [], .synthetic = false }, .args = [.n] },
+            2,
+        ]},
+    ]},
+]}

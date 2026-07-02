@@ -1,0 +1,2 @@
+let x = total + tax * 2;
+fn twice(n) { n * 2 }

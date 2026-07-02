@@ -121,13 +121,17 @@ Returns true when handled; anything unrecognized is an implementation bug."
   (let ((flags (remove-if-not #'flag-p args))
         (files (remove-if #'flag-p args)))
     (check-flags flags '("--dump") "expand")
-    (when (member "--dump" flags :test #'string=)
-      (error 'sputter-error
-             :message "`sput expand --dump` arrives with M4; not supported yet"))
     (unless (= 1 (length files))
       (error 'sputter-error :message "`sput expand` needs exactly one file"))
-    (write-string (print-module (expand-module (parse-file (first files))))
-                  *standard-output*)
+    (let ((expanded (expand-module (parse-file (first files)))))
+      (if (member "--dump" flags :test #'string=)
+          ;; the module as data literals: one dump per top-level form,
+          ;; blank-line separated
+          (loop for (form . more) on expanded
+                do (write-string (dump-string form) *standard-output*)
+                   (terpri *standard-output*)
+                   (when more (terpri *standard-output*)))
+          (write-string (print-module expanded) *standard-output*)))
     0))
 
 (defun cmd-run (args)

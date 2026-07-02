@@ -95,8 +95,17 @@ belongs to the construct's body, never to a block expression (SPEC §5.3).")
   (let ((p (%make-parser (lex source :file file) file))
         (stmts '()))
     (loop until (p-at p :eof)
-          do (push (parse-statement p) stmts))
+          do (push (parse-statement-recording-end p) stmts))
     (nreverse stmts)))
+
+(defun parse-statement-recording-end (p)
+  "parse-statement, recording the statement's last token line in its meta —
+the printer's blank-line preservation needs to see closing braces."
+  (multiple-value-bind (node kind) (parse-statement p)
+    (when (and (node-p node) (meta-p (node-meta node))
+               (not (meta-synthetic (node-meta node))))
+      (setf (meta-end-line (node-meta node)) (token-line (p-prev p))))
+    (values node kind)))
 
 (defun parse-expression (source &key (file "<input>"))
   "Parse a single expression (used by tests and, later, quote bodies)."
@@ -218,7 +227,7 @@ expression when the block ends without `;`, else a synthesized scalar nil."
       (when (p-at p :rbrace)
         (p-next p)
         (return))
-      (multiple-value-bind (node kind) (parse-statement p)
+      (multiple-value-bind (node kind) (parse-statement-recording-end p)
         (ecase kind
           ;; :braced-semi: the `;` pinned it as a statement (SPEC §5.4)
           ((:decl :expr-semi :braced-semi) (push node stmts))
@@ -381,6 +390,61 @@ macro patterns); literals and atoms match by ==; `_` is the wildcard."
        (parse-record-shape p #'parse-pattern))
       (t (parse-error-at p tok "expected a pattern, got ~a"
                          (token-describe tok))))))
+
+;;; --- quote (SPEC §5.7) -------------------------------------------------------------
+
+(defparameter +quote-kinds+ '(:|expr| :|stmt| :|stmts| :|block| :|type| :|arm|)
+  "Fragment specifiers, generalized (SPEC §5.7). Default is expr.")
+
+(defun parse-quote (p)
+  "`quote { ... }` / `quote(kind) { ... }` — the body parses with the real
+parser (ill-formed fragments are impossible by construction, I3) and the
+whole form evaluates to a node (a list of nodes for `stmts`)."
+  (let ((tok (p-next p))                ; `quote`
+        (kind :|expr|))
+    (when (p-at p :lparen)
+      (p-next p)
+      (let ((kind-tok (p-expect p :ident "a quote kind")))
+        (setf kind (token-value kind-tok))
+        (unless (member kind +quote-kinds+)
+          (parse-error-at p kind-tok
+                          "unknown quote kind `~a` (expr, stmt, stmts, block, type, arm)"
+                          (symbol-name kind))))
+      (p-expect p :rparen "`)`"))
+    (let ((*no-brace-expr* nil))
+      (ecase kind
+        (:|block|
+         ;; the quote's braces are the block itself
+         (make-node :quote (list kind (parse-block p)) :meta (tok-meta p tok)))
+        (:|expr|
+         (p-expect p :lbrace "`{`")
+         (let ((body (parse-expr p)))
+           (p-expect p :rbrace "`}`")
+           (make-node :quote (list kind body) :meta (tok-meta p tok))))
+        (:|stmt|
+         (p-expect p :lbrace "`{`")
+         (let ((body (parse-statement p)))
+           (p-expect p :rbrace "`}`")
+           (make-node :quote (list kind body) :meta (tok-meta p tok))))
+        (:|stmts|
+         (p-expect p :lbrace "`{`")
+         (let ((stmts '()))
+           (loop until (p-at p :rbrace)
+                 do (push (parse-statement p) stmts))
+           (p-next p)
+           (make-node :quote (cons kind (nreverse stmts))
+                      :meta (tok-meta p tok))))
+        (:|type|
+         (p-expect p :lbrace "`{`")
+         (let ((body (parse-type p)))
+           (p-expect p :rbrace "`}`")
+           (make-node :quote (list kind body) :meta (tok-meta p tok))))
+        (:|arm|
+         (p-expect p :lbrace "`{`")
+         (let ((body (parse-arm p)))
+           (when (p-at p :comma) (p-next p)) ; tolerate a trailing comma
+           (p-expect p :rbrace "`}`")
+           (make-node :quote (list kind body) :meta (tok-meta p tok))))))))
 
 (defun parse-record-shape (p value-parser)
   "`.{ .name = X, ... }` where X comes from VALUE-PARSER — shared by record
@@ -587,8 +651,7 @@ parse error."
             (make-node :unreachable '() :meta (tok-meta p tok))))
          (:switch (parse-switch p))
          (:for (parse-for p))
-         (:quote
-          (parse-error-at p tok "`quote` arrives with M4; not supported yet"))
+         (:quote (parse-quote p))
          (t (parse-error-at p tok "expected an expression, got ~a"
                             (token-describe tok)))))
       (:lparen

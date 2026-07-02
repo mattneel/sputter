@@ -94,7 +94,7 @@ bracketed argument positions) makes the text unparseable without parens."
        (let ((head (node-head x)) (args (node-args x)))
          (cond ((eq head :block) t)
                ;; self-delimiting: their braces belong to their own grammar
-               ((member head '(:if :while :switch :for_in :fn
+               ((member head '(:if :while :switch :for_in :fn :quote
                                :record_lit :list_lit :tagged_lit))
                 nil)
                ((member head '(:not :neg)) (cond-needs-parens-p (first args)))
@@ -179,12 +179,17 @@ bracketed argument positions) makes the text unparseable without parens."
             (a:when-let ((s (render-expr (first args) 0)))
               (concatenate 'string "..." s)))
            (:unreachable "unreachable")
+           (:quote (render-quote-inline x))
            (:param (render-param x))
            (:type_ident (symbol-name (first args)))
            (:arm (render-arm-inline x))
            ((:let :var :assign :op_assign :return)
             (assert nil (x) "statement head ~a reached expression rendering" head))
-           (t (assert nil (x) "printer got a head it cannot render: ~a" head))))))))
+           (t
+            ;; reachable from user space via node() with an invented head —
+            ;; panic Sputter-side rather than trip a host assertion
+            (rt-panic "print: no rendering for a node with head .~a"
+                      (string-downcase (symbol-name head))))))))))
 
 (defun pipe-chain-p (x)
   "≥2 |> stages (the lhs of a pipe is itself a pipe)."
@@ -248,6 +253,27 @@ the no-brace rule demands it."
     (if type
         (format nil "~a: ~a" (symbol-name (ident-name name)) (render-expr type 0))
         (symbol-name (ident-name name)))))
+
+(defun quote-kind-prefix (kind)
+  (if (eq kind :|expr|)
+      "quote"                           ; the default kind is elided
+      (format nil "quote(~a)" (symbol-name kind))))
+
+(defun render-quote-inline (x)
+  (destructuring-bind (kind . body) (node-args x)
+    (let ((prefix (quote-kind-prefix kind)))
+      (case kind
+        (:|block| (a:when-let ((b (render-block-inline (first body))))
+                    (format nil "~a ~a" prefix b)))
+        (:|stmts|
+         (let ((parts (mapcar #'render-stmt-inline body)))
+           (when (every #'identity parts)
+             (format nil "~a {~{ ~a~} }" prefix parts))))
+        (:|stmt|
+         (a:when-let ((s (render-stmt-inline (first body))))
+           (format nil "~a { ~a }" prefix s)))
+        (t (a:when-let ((s (render-expr (first body) 0)))
+             (format nil "~a { ~a }" prefix s)))))))
 
 (defun render-switch-inline (x)
   "Inline switch — the *force-inline* fallback only; canonical form breaks."
@@ -430,6 +456,27 @@ multiline form; otherwise one (possibly long) inline line — never a crash."
          (out-line stream indent (concatenate 'string prefix "{"))
          (emit-block-body stream value (+ indent +indent-step+))
          (out-line stream indent (concatenate 'string "}" suffix)))
+        (:quote
+         (destructuring-bind (kind . body) (node-args value)
+           (let ((qp (quote-kind-prefix kind)))
+             (case kind
+               ((:|stmt| :|stmts|)
+                (out-line stream indent
+                          (concatenate 'string prefix qp " {"))
+                (dolist (s body)
+                  (emit-stmt stream s (+ indent +indent-step+)))
+                (out-line stream indent (concatenate 'string "}" suffix)))
+               (:|block|
+                (out-line stream indent
+                          (concatenate 'string prefix qp " {"))
+                (emit-block-body stream (first body) (+ indent +indent-step+))
+                (out-line stream indent (concatenate 'string "}" suffix)))
+               (t
+                (emit-value-broken stream
+                                   (concatenate 'string prefix qp " { ")
+                                   (first body)
+                                   (concatenate 'string " }" suffix)
+                                   indent))))))
         (:switch (emit-switch stream value indent prefix suffix))
         (:pipe (if (pipe-chain-p value)
                    (emit-pipe-chain stream value indent prefix suffix)
@@ -578,7 +625,10 @@ one `|> stage` per line, indented one step (§10.1 layout)."
 
 (defun blank-line-between-p (prev cur)
   "Preserve one blank line where the source had one or more."
-  (a:when-let ((prev-end (tree-max-line prev))
+  (a:when-let ((prev-end (or (and (node-p prev)
+                                  (meta-p (node-meta prev))
+                                  (meta-end-line (node-meta prev)))
+                             (tree-max-line prev)))
                (cur-start (node-start-line cur)))
     (>= (- cur-start prev-end) 2)))
 
@@ -650,6 +700,38 @@ one `|> stage` per line, indented one step (§10.1 layout)."
            (if (and line (<= (length line) *print-width*))
                (write-string line s)
                (emit-value-broken s "" x "" 0)))))))
+
+;;; --- dump: nodes as Sputter data literals (SPEC §5.7) ---------------------------
+;;; dump(node) renders the node in the language's own record/list syntax —
+;;; the output is a valid Sputter expression. Nodes whose args are all
+;;; scalars sit on one line; anything deeper breaks its args one per line.
+
+(defun dump-string (x &optional (indent 0))
+  (cond
+    ((not (node-p x)) (literal-string x))
+    ((every (lambda (a) (not (node-p a))) (node-args x))
+     (format nil ".{ .head = .~a, .meta = ~a, .args = [~{~a~^, ~}] }"
+             (string-downcase (symbol-name (node-head x)))
+             (dump-meta-string (node-meta x))
+             (mapcar #'literal-string (node-args x))))
+    (t
+     (let* ((inner (+ indent +indent-step+))
+            (pad (make-string inner :initial-element #\Space)))
+       (format nil ".{ .head = .~a, .meta = ~a, .args = [~%~{~a~%~}~a]}"
+               (string-downcase (symbol-name (node-head x)))
+               (dump-meta-string (node-meta x))
+               (mapcar (lambda (a)
+                         (concatenate 'string pad (dump-string a inner) ","))
+                       (node-args x))
+               (make-string indent :initial-element #\Space))))))
+
+(defun dump-meta-string (m)
+  (format nil ".{ .file = ~a, .line = ~a, .col = ~a, .scopes = [~{~a~^, ~}], .synthetic = ~a }"
+          (if (meta-file m) (escape-string-literal (meta-file m)) "nil")
+          (or (meta-line m) "nil")
+          (or (meta-col m) "nil")
+          (mapcar #'literal-string (meta-scopes m))
+          (if (meta-synthetic m) "true" "false")))
 
 ;;; --- show: runtime values as Sputter literals (SPEC §5.7) ---------------------
 

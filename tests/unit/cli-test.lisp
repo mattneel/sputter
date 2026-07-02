@@ -44,5 +44,5 @@
     (ok (= code 1) "unknown flags are errors")
     (ok (search "unknown flag" out)))
   (multiple-value-bind (out code) (h:run-cli '("expand" "--dump" "tour_core.sput"))
-    (ok (= code 1) "expand --dump is not here until M4")
-    (ok (search "M4" out))))
+    (ok (= code 0) "expand --dump works (M4)")
+    (ok (search ".head = .fn" out) "…and emits data literals")))

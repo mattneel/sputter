@@ -136,7 +136,6 @@
       "expression-position if does continue into operators"))
 
 (deftest future-syntax-is-a-clean-error
-  (parse-fails "let x = quote { 1 };")
   (parse-fails "macro m { }"))
 
 (deftest review-regressions

@@ -14,7 +14,16 @@
     ("filter" . sput-filter)
     ("reduce" . sput-reduce)
     ("sum" . sput-sum)
-    ("len" . sput-len))
+    ("len" . sput-len)
+    ;; nodes as values (SPEC §4.4, M4)
+    ("head" . sput-head)
+    ("args" . sput-args)
+    ("meta" . sput-meta)
+    ("node" . sput-node-ctor)
+    ("prewalk" . sput-prewalk)
+    ("postwalk" . sput-postwalk)
+    ("print" . sput-print)
+    ("dump" . sput-dump))
   "Sputter name -> implementation symbol. Every entry is a function (values,
 not macros — the cl. bridge and the prelude are functions-only, SPEC §7).")
 

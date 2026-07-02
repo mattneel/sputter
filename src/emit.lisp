@@ -162,14 +162,16 @@ with at-least those fields, lists exactly (or with a ...tail)."
                                     append (list `(svref (tagged-vals ,g) ,i)
                                                  (emit-match-pattern s)))))))
        (:record_lit
+        ;; record patterns also destructure nodes (SPEC §4.4: nodes match
+        ;; like tagged data — they expose .head/.meta/.args as fields)
         (let ((g (gensym "RECORD"))
               (fields (node-args pat)))
-          `(trivia:guard1 ,g (and (record-p ,g)
+          `(trivia:guard1 ,g (and (match-fields-p ,g)
                                   ,@(mapcar (lambda (fi)
-                                              `(record-has-p ,g ',(first (node-args fi))))
+                                              `(match-field-has-p ,g ',(first (node-args fi))))
                                             fields))
                           ,@(loop for fi in fields
-                                  append (list `(record-ref ,g ',(first (node-args fi)))
+                                  append (list `(sput-field ,g ',(first (node-args fi)))
                                                (emit-match-pattern
                                                 (second (node-args fi))))))))
        (:list_lit

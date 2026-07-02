@@ -42,6 +42,9 @@ no surface heads, no macro-space heads. Exception: p.match keeps structured
 is validated by the emitter's pattern translator instead."
   (cond
     ((not (node-p x)) x)
+    ;; a p.lit's payload is a literal *value* — possibly a node-as-data
+    ;; (quote lowering embeds quoted subtrees literally); never IR
+    ((eq (node-head x) :p.lit) x)
     ((eq (node-head x) :p.match)
      (validate-plasma (first (node-args x)))
      (dolist (arm (rest (node-args x)) x)
@@ -342,6 +345,7 @@ bindings extend the environment for the statements that follow."
            (:list_lit (lower-list node env))
            (:switch (lower-switch node env))
            (:for_in (lower-for node env))
+           (:quote (lower-quote node env))
            ((:let :var :assign :op_assign :return)
             (lower-error node "~(~a~) is a statement, not an expression" head))
            (t (assert nil (node)
@@ -420,6 +424,46 @@ doesn't; literals/atoms match by ==."
 (defun find-duplicate (names)
   (loop for (n . rest) on names
         when (member n rest :test #'eq) return n))
+
+;;; --- quote lowering (SPEC §5.7, §5.8.3) -----------------------------------------------
+;;; A quote lowers to code that *constructs* its body node at runtime.
+;;; Splicing rule (I4, uniform at term level and in macro bodies): an
+;;; identifier in the quoted body that names a lexically visible binding
+;;; splices that binding's runtime value (nodes splice as nodes, scalars
+;;; lift to literals); every other identifier is literal syntax. Nested
+;;; quotes stay syntax — depth games are punted to insert() (M5).
+
+(defun lower-quote (node env)
+  (destructuring-bind (kind . body) (node-args node)
+    (if (eq kind :|stmts|)
+        (pl :p.list node (mapcar (lambda (s) (lift-quoted s env)) body))
+        (lift-quoted (first body) env))))
+
+(defun lift-quoted (x env)
+  (cond
+    ((not (node-p x)) (pl :p.lit x (list x)))   ; scalars self-quote
+    ((and (ident-node-p x) (lenv-lookup env (ident-name x)))
+     ;; in-scope name: splice by bare name (I4); validated at runtime
+     (pl :p.host_call x
+         (list 'lift-splice (pl :p.ref x (list (ident-name x) :local)))))
+    ((not (quoted-splice-p x env))
+     ;; nothing to splice below: embed the subtree as a literal value
+     (pl :p.lit x (list x)))
+    (t
+     ;; rebuild this node around inner splices, preserving its meta
+     (pl :p.host_call x
+         (list '%rebuild-node
+               (pl :p.lit x (list (node-head x)))
+               (pl :p.lit x (list (node-meta x)))
+               (pl :p.list x
+                   (mapcar (lambda (a) (lift-quoted a env)) (node-args x))))))))
+
+(defun quoted-splice-p (x env)
+  "Does the quoted subtree X contain any splice point under ENV?"
+  (and (node-p x)
+       (cond ((eq (node-head x) :quote) nil) ; nested quotes stay syntax
+             ((and (ident-node-p x) (lenv-lookup env (ident-name x))) t)
+             (t (some (lambda (a) (quoted-splice-p a env)) (node-args x))))))
 
 ;;; --- for..in desugar (SPEC §5.4, §6) -------------------------------------------------
 

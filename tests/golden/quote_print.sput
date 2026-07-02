@@ -1,0 +1,12 @@
+let q = quote { total + tax * 2 };
+let s = quote(stmt) { let y = 1; };
+let b = quote(block) {
+    f();
+    g()
+};
+let t = quote(type) { i64 };
+let a = quote(arm) { .ok(v) => v };
+let m = quote(stmts) { f(); g(); };
+println(print(q));
+println(print(s));
+println(print(t));

@@ -1,0 +1,14 @@
+fn rebuild(d) {
+    switch d {
+        .{ .head = h, .args = as } => node(h, map(as, rebuild)),
+        else => d,
+    }
+}
+
+let n = quote { total + tax * 2 };
+println(print(n));
+println(print(rebuild(n)));
+println(show(rebuild(n) == n));
+println(show(head(n)));
+println(show(meta(n).synthetic));
+println(show(meta(rebuild(n)).synthetic));
