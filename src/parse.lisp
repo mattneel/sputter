@@ -35,6 +35,15 @@
   "Bound true while parsing paren-free conditions/scrutinees: a bare `{` there
 belongs to the construct's body, never to a block expression (SPEC §5.3).")
 
+(defvar *in-quote* nil
+  "Bound true while parsing quote bodies and macro templates: there (and only
+there) raw(x)/inject(x)/insert(e) are the template escapes (SPEC §5.8.3).")
+
+;; The macro registry lives in expand.lisp (loaded later); the parser only
+;; asks 'is this name a macro?' and registers signatures at definition sites.
+(declaim (ftype (function (keyword) t) macro-name-p)
+         (ftype (function (keyword list t) t) register-macro-signature))
+
 ;;; --- token cursor -------------------------------------------------------------
 
 (defun p-peek (p &optional (n 0))
@@ -124,6 +133,7 @@ terminated: :decl (`;` consumed), :braced (}-terminated form), :expr-semi,
 or :expr-open (an expression with no `;` — legal only as a block's value)."
   (cond
     ((or (p-at-kw p :let) (p-at-kw p :var)) (parse-binding p))
+    ((p-at-kw p :macro) (values (parse-macro-def p) (braced-statement-end p)))
     ((p-at-kw p :return) (parse-return p))
     ((p-at-kw p :while) (values (parse-while p) (braced-statement-end p)))
     ((p-at-kw p :for) (values (parse-for p) (braced-statement-end p)))
@@ -142,11 +152,35 @@ never be promoted to a block's trailing value."
       (progn (p-next p) :braced-semi)
       :braced))
 
+(defun parse-binder-name (p)
+  "A binding-position name: an identifier — or, inside quote bodies,
+inject(x)/raw(x) (anaphoric/literal binders, SPEC §5.8.3)."
+  (if (and *in-quote*
+           (p-at p :ident)
+           (member (token-value (p-peek p)) '(:|inject| :|raw|))
+           (p-at p :lparen 1))
+      (parse-template-escape p)
+      (let ((name-tok (p-expect p :ident "a name")))
+        (make-ident (token-value name-tok) :meta (tok-meta p name-tok)))))
+
+(defun parse-template-escape (p)
+  "raw(x) / inject(x) / insert(e) inside a quote body."
+  (let* ((tok (p-next p))
+         (which (token-value tok))
+         (head (ecase which (:|raw| :raw) (:|inject| :inject) (:|insert| :insert))))
+    (p-expect p :lparen "`(`")
+    (let ((arg (if (eq head :insert)
+                   (let ((*no-brace-expr* nil)) (parse-expr p))
+                   (let ((name-tok (p-expect p :ident "an identifier")))
+                     (make-ident (token-value name-tok)
+                                 :meta (tok-meta p name-tok))))))
+      (p-expect p :rparen "`)`")
+      (make-node head (list arg) :meta (tok-meta p tok)))))
+
 (defun parse-binding (p)
   (let* ((intro (p-next p))              ; let | var
          (head (if (eq (token-value intro) :let) :let :var))
-         (name-tok (p-expect p :ident "a name"))
-         (name (make-ident (token-value name-tok) :meta (tok-meta p name-tok)))
+         (name (parse-binder-name p))
          (type (when (p-at p :colon)
                  (p-next p)
                  (parse-type p))))
@@ -155,6 +189,66 @@ never be promoted to a block's trailing value."
       (p-expect-semi p (format nil "`~(~a~)` binding" head))
       (values (make-node head (list name type value) :meta (tok-meta p intro))
               :decl))))
+
+;;; --- macro definitions (SPEC §5.8.1, §5.8.4) -----------------------------------
+
+(defparameter +hole-kinds+
+  '(:|expr| :|stmt| :|block| :|ident| :|atom| :|literal| :|type| :|arm|)
+  "The kind inventory (SPEC §5.8.2) — the types of macro land.")
+
+(defun parse-kind (p what)
+  (let ((tok (p-expect p :ident what)))
+    (unless (member (token-value tok) +hole-kinds+)
+      (parse-error-at p tok
+                      "unknown kind `~a` (expr, stmt, block, ident, atom, literal, type, arm)"
+                      (symbol-name (token-value tok))))
+    (token-value tok)))
+
+(defun parse-macro-def (p)
+  (let ((macro-tok (p-next p)))          ; `macro`
+    (cond
+      ((p-at-kw p :fn) (parse-macro-fn p macro-tok))
+      ((p-at p :ident)
+       (parse-error-at p (p-peek p)
+                       "by-example `macro name { ... }` arrives with M6; not supported yet"))
+      (t (parse-error-at p (p-peek p) "expected `fn` or a macro name after `macro`")))))
+
+(defun parse-macro-fn (p macro-tok)
+  "`macro fn name(a: kind, b: kind) retkind { body }` (SPEC §5.8.4)."
+  (p-next p)                             ; `fn`
+  (let* ((name-tok (p-expect p :ident "a macro name"))
+         (name (make-ident (token-value name-tok) :meta (tok-meta p name-tok)))
+         (params '()))
+    (p-expect p :lparen "`(`")
+    (unless (p-at p :rparen)
+      (loop
+        (let* ((ptok (p-expect p :ident "a parameter name"))
+               (pname (make-ident (token-value ptok) :meta (tok-meta p ptok))))
+          (p-expect p :colon "`:` (macro parameters declare kinds)")
+          (push (make-node :param (list pname (parse-kind p "a kind"))
+                           :meta (tok-meta p ptok))
+                params))
+        (if (p-at p :comma)
+            (progn (p-next p)
+                   (when (p-at p :rparen) (return)))
+            (return))))
+    (p-expect p :rparen "`)`")
+    (let* ((ret-kind (parse-kind p "the macro's return kind"))
+           (body (let ((*in-quote* nil)) (parse-block p)))
+           (node (make-node :macro_fn_def
+                            (append (list name) (nreverse params)
+                                    (list ret-kind body))
+                            :meta (tok-meta p macro-tok))))
+      ;; register the *signature* now: later forms in this module parse
+      ;; calls to this macro by extent (define-before-use, SPEC §5.2)
+      (register-macro-signature
+       (ident-name name)
+       (mapcar (lambda (param)
+                 (cons (ident-name (first (node-args param)))
+                       (second (node-args param))))
+               (subseq (node-args node) 1 (- (length (node-args node)) 2)))
+       ret-kind)
+      node)))
 
 (defun parse-return (p)
   (let ((tok (p-next p)))
@@ -245,10 +339,10 @@ expression when the block ends without `;`, else a synthesized scalar nil."
 
 (defun value-expr-p (node)
   "Can NODE be a block's trailing value? Expressions only — declarations,
-assignments, and named fn defs are not values."
+assignments, macro defs, and named fn defs are not values."
   (and (node-p node)
        (not (member (node-head node)
-                    '(:let :var :assign :op_assign :return)))
+                    '(:let :var :assign :op_assign :return :macro_fn_def)))
        (not (and (eq (node-head node) :fn)
                  (first (node-args node))))))
 
@@ -411,7 +505,8 @@ whole form evaluates to a node (a list of nodes for `stmts`)."
                           "unknown quote kind `~a` (expr, stmt, stmts, block, type, arm)"
                           (symbol-name kind))))
       (p-expect p :rparen "`)`"))
-    (let ((*no-brace-expr* nil))
+    (let ((*no-brace-expr* nil)
+          (*in-quote* t))
       (ecase kind
         (:|block|
          ;; the quote's braces are the block itself
@@ -601,8 +696,38 @@ parse error."
            (make-node :neg (list operand) :meta (tok-meta p tok)))))
     (t (parse-postfix p))))
 
+(defun collect-paren-group (p)
+  "Consume a balanced (...) group; return the interior tokens as a
+token-group (the raw macro-call payload, SPEC §5.8.6)."
+  (p-expect p :lparen "`(`")
+  (let ((start (parser-index p))
+        (depth 1))
+    (loop
+      (let ((tok (p-peek p)))
+        (case (token-type tok)
+          (:eof (parse-error-at p tok "unterminated macro invocation"))
+          ((:lparen :lbracket :lbrace :dot-lbrace) (incf depth))
+          ((:rparen :rbracket :rbrace)
+           (when (and (eq (token-type tok) :rparen) (= depth 1))
+             (p-next p)
+             (return (make-token-group
+                      (subseq (parser-tokens p) start (1- (parser-index p))))))
+           (decf depth))))
+      (p-next p))))
+
 (defun parse-postfix (p)
   (let ((e (parse-primary p)))
+    ;; enforestation-lite (SPEC §5.8.6): a known macro name in call position
+    ;; claims its balanced parens as a raw token group. Inside quotes too —
+    ;; a quoted macro call is data, but its extent still needs collecting;
+    ;; it expands only when spliced back into a program.
+    (when (and (ident-node-p e)
+               (p-at p :lparen)
+               (macro-name-p (ident-name e)))
+      (return-from parse-postfix
+        (make-node :macro_call
+                   (list (ident-name e) (collect-paren-group p))
+                   :meta (node-meta e))))
     (loop
       (cond
         ((p-at p :lparen)
@@ -636,8 +761,13 @@ parse error."
       (:int (token-value (p-next p)))
       (:float (token-value (p-next p)))
       (:string (token-value (p-next p)))
-      (:ident (let ((tok (p-next p)))
-                (make-ident (token-value tok) :meta (tok-meta p tok))))
+      (:ident
+       (if (and *in-quote*
+                (member (token-value tok) '(:|raw| :|inject| :|insert|))
+                (p-at p :lparen 1))
+           (parse-template-escape p)
+           (let ((tok (p-next p)))
+             (make-ident (token-value tok) :meta (tok-meta p tok)))))
       (:kw
        (case (token-value tok)
          (:true (p-next p) t)

@@ -1,0 +1,5 @@
+macro fn bad() expr {
+    quote(stmt) { let x = 1; }
+}
+
+bad();

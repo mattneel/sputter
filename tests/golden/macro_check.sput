@@ -1,0 +1,10 @@
+macro fn check(cond: expr) expr {
+    let text = print(cond);
+    quote {
+        if !cond {
+            panic("check failed: " ++ text)
+        }
+    }
+}
+
+check(reserved <= capacity);

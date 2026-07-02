@@ -104,6 +104,10 @@ Returns true when handled; anything unrecognized is an implementation bug."
     (if (member "--check" flags :test #'string=)
         (let ((dirty '()))
           (dolist (f files)
+            ;; Parsing is macro-aware (define-before-use); each file must start
+            ;; from a clean registry so in-process CLI calls cannot leak macros
+            ;; into later fmt checks.
+            (reset-globals)
             (let ((src (read-source-file f)))
               (unless (string= src (print-module (parse-module src :file f)))
                 (push f dirty)
@@ -113,6 +117,7 @@ Returns true when handled; anything unrecognized is an implementation bug."
           (unless (= 1 (length files))
             (error 'sputter-error
                    :message "`sput fmt` writes to stdout; pass exactly one file (or use --check)"))
+          (reset-globals)
           (write-string (print-module (parse-file (first files)))
                         *standard-output*)
           0))))
@@ -123,15 +128,37 @@ Returns true when handled; anything unrecognized is an implementation bug."
     (check-flags flags '("--dump") "expand")
     (unless (= 1 (length files))
       (error 'sputter-error :message "`sput expand` needs exactly one file"))
-    (let ((expanded (expand-module (parse-file (first files)))))
-      (if (member "--dump" flags :test #'string=)
-          ;; the module as data literals: one dump per top-level form,
-          ;; blank-line separated
-          (loop for (form . more) on expanded
-                do (write-string (dump-string form) *standard-output*)
-                   (terpri *standard-output*)
-                   (when more (terpri *standard-output*)))
-          (write-string (print-module expanded) *standard-output*)))
+    ;; Macro signatures are parser state; do not let a prior in-process command
+    ;; influence what this file treats as a macro invocation.
+    (reset-globals)
+    (let* ((expanded (expand-module (parse-file (first files))))
+           (dump (member "--dump" flags :test #'string=))
+           (has-macro-def
+             (some (lambda (form)
+                     (and (node-p form) (eq (node-head form) :macro_fn_def)))
+                   expanded))
+           (chunks
+             (mapcar (lambda (form)
+                       (if (and (node-p form)
+                                (eq (node-head form) :macro_fn_def))
+                           ;; §9: macro definitions print as comments noting
+                           ;; they were consumed
+                           (format nil "// macro `~a` consumed by expansion~%"
+                                   (symbol-name (ident-name (first (node-args form)))))
+                           (if dump
+                               (format nil "~a~%" (dump-string form))
+                               (print-module (list form)))))
+                     expanded)))
+      (if dump
+          ;; Keep M4's dump contract: one dump per top-level form, blank-line separated.
+          (format *standard-output* "~{~a~^~%~}" chunks)
+          (if has-macro-def
+              ;; Macro definitions are consumed and rendered as comments (§9), so
+              ;; chunk rendering is necessary for mixed node/comment streams.
+              (format *standard-output* "~{~a~}" chunks)
+              ;; Ordinary macro-free expansion stays on the whole-module printer so
+              ;; source-driven blank-line preservation remains intact.
+              (write-string (print-module expanded) *standard-output*))))
     0))
 
 (defun cmd-run (args)

@@ -3,6 +3,8 @@
 
 (in-package #:sputter.impl)
 
+(declaim (ftype (function (string) string) escape-string-literal)) ; print.lisp
+
 (defstruct (token (:constructor %make-token (type value line col text)))
   (type nil :type keyword)
   value
@@ -215,7 +217,10 @@ error, not a host reader-error)."
           ((char= ch #\")
            (lx-advance lx)
            (let ((value (get-output-stream-string out)))
-             (return (%make-token :string value line col value))))
+             ;; text keeps the raw lexeme (quotes + escapes): macro-call
+             ;; payloads re-serialize from token text
+             (return (%make-token :string value line col
+                                  (escape-string-literal value)))))
           ((char= ch #\\)
            (lx-advance lx)
            (let ((esc (lx-peek lx)))
@@ -262,6 +267,43 @@ error, not a host reader-error)."
                     "unexpected `.` (atoms and field access need a name: `.foo`)")))))
 
 ;;; --- operators and punctuation ------------------------------------------------
+
+;;; --- token utilities (macro-call payloads, SPEC §5.8.6) ------------------------
+
+(defun token-content-equal (a b)
+  (and (eq (token-type a) (token-type b))
+       (let ((va (token-value a)) (vb (token-value b)))
+         (cond ((and (stringp va) (stringp vb)) (string= va vb))
+               (t (eql va vb))))))
+
+(defun token-group-equal (a b)
+  (let ((ta (token-group-tokens a)) (tb (token-group-tokens b)))
+    (and (= (length ta) (length tb))
+         (every #'token-content-equal ta tb))))
+
+(defun serialize-tokens (tokens)
+  "Canonical text for a raw token slice (printing unexpanded macro calls):
+single spaces between tokens, none before , ; ) ] } or after ( [ .{ nor
+around postfix `.name` and call/index openers."
+  (with-output-to-string (out)
+    (loop for i from 0 below (length tokens)
+          for tok = (aref tokens i)
+          for prev = (and (plusp i) (aref tokens (1- i)))
+          do (when (and prev (token-space-between-p prev tok))
+               (write-char #\Space out))
+             (write-string (token-text tok) out))))
+
+(defun token-space-between-p (prev tok)
+  (not (or (member (token-type tok) '(:comma :semi :rparen :rbracket :rbrace))
+           (member (token-type prev) '(:lparen :lbracket :dot-lbrace))
+           ;; postfix chains stay tight: x.y, f(x), xs[0]
+           (and (eq (token-type tok) :dot-ident)
+                (member (token-type prev)
+                        '(:ident :dot-ident :rparen :rbracket :int :float
+                          :string :kw)))
+           (and (member (token-type tok) '(:lparen :lbracket))
+                (member (token-type prev)
+                        '(:ident :dot-ident :rparen :rbracket))))))
 
 (defun lex-operator (lx line col)
   (let ((source (lexer-source lx))

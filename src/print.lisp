@@ -66,7 +66,8 @@ parser folds `-1` back into the scalar, so this round-trips)."
 
 (defun binop-info (head) (assoc head +binop-info+))
 
-(defparameter +brace-stmt-heads+ '(:if :while :block :fn :switch :for_in)
+(defparameter +brace-stmt-heads+
+  '(:if :while :block :fn :switch :for_in :macro_fn_def)
   "Heads whose statement form is }-terminated and takes no trailing `;`.")
 
 (defparameter +stmt-only-heads+ '(:let :var :assign :op_assign :return))
@@ -180,6 +181,12 @@ bracketed argument positions) makes the text unparseable without parens."
               (concatenate 'string "..." s)))
            (:unreachable "unreachable")
            (:quote (render-quote-inline x))
+           (:macro_call
+            (format nil "~a(~a)" (symbol-name (first args))
+                    (serialize-tokens (token-group-tokens (second args)))))
+           ((:raw :inject :insert)
+            (a:when-let ((s (render-expr (first args) 0)))
+              (format nil "~(~a~)(~a)" head s)))
            (:param (render-param x))
            (:type_ident (symbol-name (first args)))
            (:arm (render-arm-inline x))
@@ -250,9 +257,18 @@ the no-brace rule demands it."
 
 (defun render-param (param)
   (destructuring-bind (name type) (node-args param)
+    ;; the type slot holds a type node — or a bare kind keyword (macro fn)
     (if type
-        (format nil "~a: ~a" (symbol-name (ident-name name)) (render-expr type 0))
-        (symbol-name (ident-name name)))))
+        (format nil "~a: ~a" (render-binder-name name)
+                (if (keywordp type) (symbol-name type) (render-expr type 0)))
+        (render-binder-name name))))
+
+(defun render-binder-name (name)
+  "Binder positions hold ident nodes — or inject(x)/raw(x) escapes in
+templates."
+  (if (ident-node-p name)
+      (symbol-name (ident-name name))
+      (render-expr name 0)))
 
 (defun quote-kind-prefix (kind)
   (if (eq kind :|expr|)
@@ -347,7 +363,7 @@ or NIL when it must break (named fn defs are always multiline, canonically)."
          (destructuring-bind (name type value) (node-args node)
            (a:when-let ((vs (render-expr value 0)))
              (format nil "~(~a~) ~a~@[: ~a~] = ~a;"
-                     (node-head node) (symbol-name (ident-name name))
+                     (node-head node) (render-binder-name name)
                      (and type (render-expr type 0)) vs))))
         (:assign
          (destructuring-bind (target value) (node-args node)
@@ -368,6 +384,7 @@ or NIL when it must break (named fn defs are always multiline, canonically)."
          (if (first (node-args node))
              nil                        ; named fn defs always break
              (render-expr node 0)))     ; lambda as expression statement
+        (:macro_fn_def nil)             ; macro defs always break
         ((:if :while :block :for_in :switch) (render-expr node 0))
         (t (a:when-let ((s (render-expr node 0)))
              (concatenate 'string
@@ -398,7 +415,7 @@ or NIL when it must break (named fn defs are always multiline, canonically)."
 
 (defun emit-stmt-broken (stream node indent suffix)
   (case (node-head node)
-    (:fn (emit-fn stream node indent "" suffix))
+    ((:fn :macro_fn_def) (emit-fn stream node indent "" suffix))
     (:if (emit-if-chain stream node indent "" suffix))
     ((:while :for_in) (emit-value-broken stream "" node suffix indent))
     (:block (emit-value-broken stream "" node suffix indent))
@@ -528,17 +545,21 @@ multiline form; otherwise one (possibly long) inline line — never a crash."
              (return))))))
 
 (defun emit-fn (stream node indent prefix suffix)
+  "fn defs, lambdas, and macro fn defs share one shape."
   (let* ((args (node-args node))
+         (macro-p (eq (node-head node) :macro_fn_def))
          (name (first args))
          (body (a:lastcar args))
          (ret (a:lastcar (butlast args)))
          (params (subseq args 1 (- (length args) 2))))
     (out-line stream indent
-              (format nil "~afn~@[ ~a~](~{~a~^, ~})~@[ ~a~] {"
-                      prefix
-                      (and name (symbol-name (ident-name name)))
+              (format nil "~a~:[~;macro ~]fn~@[ ~a~](~{~a~^, ~})~@[ ~a~] {"
+                      prefix macro-p
+                      (and name (render-binder-name name))
                       (mapcar #'render-param params)
-                      (and ret (render-expr ret 0))))
+                      (and ret (if (keywordp ret)
+                                   (symbol-name ret)
+                                   (render-expr ret 0)))))
     (emit-block-body stream body (+ indent +indent-step+))
     (out-line stream indent (concatenate 'string "}" suffix))))
 
@@ -670,7 +691,7 @@ one `|> stage` per line, indented one step (§10.1 layout)."
 
 (defun named-def-p (x)
   (and (node-p x)
-       (eq (node-head x) :fn)
+       (member (node-head x) '(:fn :macro_fn_def))
        (first (node-args x))))
 
 (defun print-module (stmts)

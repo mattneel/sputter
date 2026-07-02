@@ -1,0 +1,2 @@
+// macro `check` consumed by expansion
+if !(reserved <= capacity) { panic("check failed: " ++ "reserved <= capacity") }

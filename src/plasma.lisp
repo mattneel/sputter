@@ -73,18 +73,47 @@ calls vs funcalls. Reset per `sput run`/`sput repl` session.")
   (setf (gethash name *globals*) (cons :var mutable)))
 
 ;;; --- lowering environment -------------------------------------------------------
+;;; Bindings carry the binder's hygiene scope set (SPEC §5.8.5). Resolution
+;;; rule (rename-based v0.1): a reference resolves to a local binding only
+;;; when the binding's scope set EXACTLY equals the reference's — template
+;;; refs skip user binders (falling through to the definition environment's
+;;; globals), user refs skip template binders. Marked binders additionally
+;;; get fresh emit names so CL's lexical scoping can never conflate them.
+
+(defstruct (lbind (:constructor make-lbind (name kind scopes)))
+  (name nil :type keyword)
+  (kind nil :type keyword)              ; :let | :var | :param
+  (scopes '() :type list))
 
 (defstruct (lenv (:constructor %make-lenv (bindings fn-name)))
-  ;; alist: name-keyword -> :let | :var | :param
-  (bindings '() :type list)
+  (bindings '() :type list)             ; innermost lbind first
   ;; innermost fn name keyword (or nil at top level) — return target
   (fn-name nil))
 
-(defun lenv-extend (env name kind)
-  (%make-lenv (acons name kind (lenv-bindings env)) (lenv-fn-name env)))
+(defun scope-set-equal (a b)
+  (and (subsetp a b) (subsetp b a)))
 
-(defun lenv-lookup (env name)
-  (cdr (assoc name (lenv-bindings env) :test #'eq)))
+(defun binder-scopes (ident-node)
+  (let ((m (node-meta ident-node)))
+    (and (meta-p m) (meta-scopes m))))
+
+(defun ref-scopes (node)
+  (let ((m (and (node-p node) (node-meta node))))
+    (and (meta-p m) (meta-scopes m))))
+
+(defun lenv-extend (env name kind &optional scopes)
+  (%make-lenv (cons (make-lbind name kind scopes)
+                    (lenv-bindings env))
+              (lenv-fn-name env)))
+
+(defun lenv-lookup (env name &optional scopes)
+  "The innermost binding of NAME whose scope set matches exactly, or NIL.
+Template binders are already renamed fresh by the expander; the exact-match
+rule handles the remaining direction — marked (template-origin) references
+skip unmarked user binders and reach the definition environment's globals."
+  (find-if (lambda (b) (and (eq (lbind-name b) name)
+                            (scope-set-equal (lbind-scopes b) scopes)))
+           (lenv-bindings env)))
 
 (defun top-lenv () (%make-lenv '() nil))
 
@@ -173,12 +202,12 @@ calls vs funcalls. Reset per `sput run`/`sput repl` session.")
     (dolist (param params)
       (destructuring-bind (pname ptype) (node-args param)
         (let ((pname-kw (ident-name pname)))
-          (when (assoc pname-kw (lenv-bindings fn-env) :test #'eq)
-            ;; shadowing outer scopes is fine; duplicate params are not
-            (when (member pname-kw (mapcar (lambda (p) (first (node-args p)))
-                                           p-params))
-              (lower-error param "duplicate parameter `~a`" (symbol-name pname-kw))))
-          (setf fn-env (lenv-extend fn-env pname-kw :param))
+          ;; shadowing outer scopes is fine; duplicate params are not
+          (when (member pname-kw (mapcar (lambda (p) (first (node-args p)))
+                                         p-params))
+            (lower-error param "duplicate parameter `~a`" (symbol-name pname-kw)))
+          (setf fn-env (lenv-extend fn-env pname-kw :param
+                                    (binder-scopes pname)))
           (push (pl :p.param param (list pname-kw (lower-type ptype))) p-params))))
     (pl :p.fn node
         (append (list name)
@@ -210,18 +239,22 @@ bindings extend the environment for the statements that follow."
                   (init (lower-expr value env))
                   (kind (if (eq (node-head node) :var) :var :let)))
              (values (list (pl :p.let node (list name-kw (lower-type type) init)))
-                     (lenv-extend env name-kw kind)))))
+                     (lenv-extend env name-kw kind (binder-scopes name))))))
         (:fn
          (if (first (node-args node))
              ;; local named fn: bind the name first so the body can recurse,
              ;; then assign (emits as let f = nil; f = fn...)
-             (let* ((name-kw (ident-name (first (node-args node))))
-                    (new-env (lenv-extend env name-kw :let))
+             (let* ((name-ident (first (node-args node)))
+                    (name-kw (ident-name name-ident))
+                    (new-env (lenv-extend env name-kw :let
+                                          (binder-scopes name-ident)))
                     (p-fn (lower-fn node new-env :name name-kw)))
                (values (list (pl :p.let node (list name-kw nil (pl :p.lit node (list nil))))
                              (pl :p.assign node (list name-kw :local p-fn)))
                        new-env))
              (values (list (lower-expr node env)) env)))
+        (:macro_fn_def
+         (lower-error node "macro definitions are top-level forms (SPEC §5.2)"))
         (t (values (list (lower-stmt node env)) env)))))
 
 (defun lower-stmt (node env)
@@ -229,24 +262,25 @@ bindings extend the environment for the statements that follow."
   (case (node-head node)
     (:assign
      (destructuring-bind (target value) (node-args node)
-       (lower-assign node (ident-name target) (lower-expr value env) env)))
+       (lower-assign node target (lower-expr value env) env)))
     (:op_assign
      (destructuring-bind (op target value) (node-args node)
-       (let ((name-kw (ident-name target)))
-         (lower-assign node name-kw
-                       (pl :p.host_call node
-                           (list (cdr (assoc op +op-builtins+))
-                                 (lower-ident-ref target name-kw env)
-                                 (lower-expr value env)))
-                       env))))
+       (lower-assign node target
+                     (pl :p.host_call node
+                         (list (cdr (assoc op +op-builtins+))
+                               (lower-ident-ref target (ident-name target) env)
+                               (lower-expr value env)))
+                     env)))
     (:return
      (unless (lenv-fn-name env)
        (lower-error node "`return` outside a function"))
      (pl :p.return node (list (lower-expr (first (node-args node)) env))))
     (t (lower-expr node env))))
 
-(defun lower-assign (node name-kw value env)
-  (let ((local (lenv-lookup env name-kw)))
+(defun lower-assign (node target value env)
+  (let* ((name-kw (ident-name target))
+         (binding (lenv-lookup env name-kw (ref-scopes target)))
+         (local (and binding (lbind-kind binding))))
     (case local
       (:var (pl :p.assign node (list name-kw :local value)))
       ((:let :param)
@@ -269,7 +303,8 @@ bindings extend the environment for the statements that follow."
 
 (defun lower-ident-ref (node name-kw env &key callee)
   (cond
-    ((lenv-lookup env name-kw) (pl :p.ref node (list name-kw :local)))
+    ((lenv-lookup env name-kw (ref-scopes node))
+     (pl :p.ref node (list name-kw :local)))
     (t (let ((global (global-entry name-kw)))
          (cond
            ((and global (eq (car global) :fn))
@@ -348,6 +383,11 @@ bindings extend the environment for the statements that follow."
            (:quote (lower-quote node env))
            ((:let :var :assign :op_assign :return)
             (lower-error node "~(~a~) is a statement, not an expression" head))
+           (:macro_fn_def
+            (lower-error node "macro definitions are top-level forms (SPEC §5.2)"))
+           ((:macro_call :raw :inject :insert :hole :splice_seq)
+            (assert nil (node)
+                    "macro-space head ~a reached the lowerer outside a quote" head))
            (t (assert nil (node)
                       "lowerer got a head it does not know: ~a" head))))))))
 
@@ -388,14 +428,15 @@ bindings extend the environment for the statements that follow."
 ;;; --- switch (SPEC §5.6) ------------------------------------------------------------
 
 (defun pattern-binders (pattern)
-  "The names a term pattern binds, in order. Bare identifiers bind; `_`
-doesn't; literals/atoms match by ==."
+  "The identifier nodes a term pattern binds, in order. Bare identifiers
+bind; `_` doesn't; literals/atoms match by ==."
   (cond
     ((not (node-p pattern)) '())
     (t
      (case (node-head pattern)
-       (:ident (let ((name (ident-name pattern)))
-                 (if (string= (symbol-name name) "_") '() (list name))))
+       (:ident (if (string= (symbol-name (ident-name pattern)) "_")
+                   '()
+                   (list pattern)))
        (:tagged_lit (a:mappend #'pattern-binders (rest (node-args pattern))))
        (:record_lit
         (a:mappend (lambda (fi) (pattern-binders (second (node-args fi))))
@@ -413,11 +454,13 @@ doesn't; literals/atoms match by ==."
                  (destructuring-bind (pattern body) (node-args arm)
                    (let ((binders (pattern-binders pattern))
                          (arm-env env))
-                     (a:when-let ((dup (find-duplicate binders)))
+                     (a:when-let ((dup (find-duplicate
+                                        (mapcar #'ident-name binders))))
                        (lower-error arm "pattern binds `~a` more than once"
                                     (symbol-name dup)))
                      (dolist (b binders)
-                       (setf arm-env (lenv-extend arm-env b :let)))
+                       (setf arm-env (lenv-extend arm-env (ident-name b) :let
+                                                  (binder-scopes b))))
                      (pl :p.arm arm (list pattern (lower-expr body arm-env))))))
                arms)))))
 
@@ -442,13 +485,33 @@ doesn't; literals/atoms match by ==."
 (defun lift-quoted (x env)
   (cond
     ((not (node-p x)) (pl :p.lit x (list x)))   ; scalars self-quote
-    ((and (ident-node-p x) (lenv-lookup env (ident-name x)))
-     ;; in-scope name: splice by bare name (I4); validated at runtime
+    ((and (ident-node-p x) (lenv-lookup env (ident-name x) (ref-scopes x)))
+     ;; in-scope name: splice by bare name (I4); validated at runtime.
+     ;; Spliced values are never re-marked — they are not template text.
      (pl :p.host_call x
          (list 'lift-splice (pl :p.ref x (list (ident-name x) :local)))))
+    ;; the template escapes (SPEC §5.8.3) — parser produces these heads
+    ;; only inside quote bodies
+    ((eq (node-head x) :raw)
+     (pl :p.host_call x
+         (list '%make-marked-ident
+               (pl :p.lit x (list (ident-name (first (node-args x)))))
+               (pl :p.lit x (list (node-meta x))))))
+    ((eq (node-head x) :inject)
+     (pl :p.host_call x
+         (list '%make-unmarked-ident
+               (pl :p.lit x (list (ident-name (first (node-args x)))))
+               (pl :p.lit x (list (node-meta x))))))
+    ((eq (node-head x) :insert)
+     ;; computed splice: the expression evaluates at expand time in the
+     ;; macro body's environment
+     (pl :p.host_call x
+         (list 'lift-splice (lower-expr (first (node-args x)) env))))
     ((not (quoted-splice-p x env))
-     ;; nothing to splice below: embed the subtree as a literal value
-     (pl :p.lit x (list x)))
+     ;; nothing to splice below: embed the subtree literally; instantiation
+     ;; stamps the expansion mark at runtime (identity outside expansions)
+     (pl :p.host_call x
+         (list 'template-instantiate (pl :p.lit x (list x)))))
     (t
      ;; rebuild this node around inner splices, preserving its meta
      (pl :p.host_call x
@@ -462,7 +525,10 @@ doesn't; literals/atoms match by ==."
   "Does the quoted subtree X contain any splice point under ENV?"
   (and (node-p x)
        (cond ((eq (node-head x) :quote) nil) ; nested quotes stay syntax
-             ((and (ident-node-p x) (lenv-lookup env (ident-name x))) t)
+             ((member (node-head x) '(:raw :inject :insert)) t)
+             ((and (ident-node-p x)
+                   (lenv-lookup env (ident-name x) (ref-scopes x)))
+              t)
              (t (some (lambda (a) (quoted-splice-p a env)) (node-args x))))))
 
 ;;; --- for..in desugar (SPEC §5.4, §6) -------------------------------------------------
@@ -478,7 +544,8 @@ doesn't; literals/atoms match by ==."
     (let* ((cursor (fresh-name "for"))
            (binder-kw (ident-name binder))
            (cursor-env (lenv-extend env cursor :var))
-           (body-env (lenv-extend cursor-env binder-kw :let))
+           (body-env (lenv-extend cursor-env binder-kw :let
+                                  (binder-scopes binder)))
            (cursor-ref (pl :p.ref node (list cursor :local))))
       (pl :p.block node
           (list (pl :p.let node

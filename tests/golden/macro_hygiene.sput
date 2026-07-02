@@ -1,0 +1,43 @@
+macro fn twice(e: expr) expr {
+    quote { { let tmp = e; tmp + tmp } }
+}
+
+fn helper() { 42 }
+
+macro fn call_helper() expr {
+    quote { helper() }
+}
+
+fn direction1() {
+    let tmp = 100;
+    twice(tmp) + tmp
+}
+
+fn direction2() {
+    let helper = 0;
+    call_helper() + helper
+}
+
+println(direction1());
+println(direction2());
+
+macro fn with_it(val: expr, body: expr) expr {
+    quote { { let inject(it) = val; body } }
+}
+
+println(with_it(41, it + 1));
+
+fn x() { 7 }
+
+macro fn call_x_with(x: expr) expr {
+    quote { raw(x)() + x }
+}
+
+println(call_x_with(3));
+
+macro fn plus_one(e: expr) expr {
+    let one = quote { 1 };
+    quote { e + insert(one) }
+}
+
+println(plus_one(4));

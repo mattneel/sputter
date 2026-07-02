@@ -23,7 +23,10 @@
     ("prewalk" . sput-prewalk)
     ("postwalk" . sput-postwalk)
     ("print" . sput-print)
-    ("dump" . sput-dump))
+    ("dump" . sput-dump)
+    ;; comptime ident builders (SPEC §5.8.3)
+    ("concat_ident" . sput-concat-ident)
+    ("gensym_ident" . sput-gensym-ident))
   "Sputter name -> implementation symbol. Every entry is a function (values,
 not macros — the cl. bridge and the prelude are functions-only, SPEC §7).")
 
@@ -38,6 +41,7 @@ resolves names through *globals* only."
   (clrhash *globals*)
   (clrhash *global-values*)
   (clrhash *span-table*)
+  (reset-macros)
   (register-prelude))
 
 (register-prelude)

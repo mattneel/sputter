@@ -70,7 +70,7 @@ Working through the v0.1 milestones (SPEC.md §11):
 - [x] M2 — lower + emit + run via SBCL
 - [x] M3 — data (atoms, tagged, lists, records) + `switch` + pipelines
 - [x] M4 — nodes as first-class values (`quote`, `dump`, `print`)
-- [ ] M5 — procedural macros (`macro fn`), hygiene
+- [x] M5 — procedural macros (`macro fn`), hygiene
 - [ ] M6 — by-example macros (`macro name { pattern => template }`)
 - [ ] M7 — prelude, `sput test`, polish
 - [ ] M8 — stage-1 beachhead: the printer, self-hosted in Sputter

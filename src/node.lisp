@@ -69,11 +69,24 @@
   (or (integerp x) (floatp x) (stringp x) (keywordp x)
       (eq x t) (sput-false-p x) (null x)))
 
+(declaim (ftype (function (t t) t) token-group-equal)) ; lex.lisp
+
+;; A macro invocation's raw extent (SPEC §5.8.6): balanced token groups
+;; collected by the parser, sub-parsed by kind at expansion time. Eliminated
+;; by the expander; asserting they never survive is part of negative space.
+(defstruct (token-group (:constructor make-token-group (tokens)))
+  (tokens #() :type simple-vector))
+
+(defmethod print-object ((g token-group) stream)
+  (print-unreadable-object (g stream)
+    (format stream "sput-token-group ~d tokens" (length (token-group-tokens g)))))
+
 (defun arg-elem-p (x)
   ;; Non-keyword symbols are admitted for one internal reason: p.host_call
   ;; carries a resolved CL symbol (SPEC §6); meta objects ride in p.lit when
-  ;; quote-lowering rebuilds nodes at runtime. Neither is a surface scalar.
-  (or (node-p x) (scalarp x) (symbolp x) (meta-p x)))
+  ;; quote-lowering rebuilds nodes at runtime; token-groups are macro-call
+  ;; payloads (§5.8.6). None is a surface scalar.
+  (or (node-p x) (scalarp x) (symbolp x) (meta-p x) (token-group-p x)))
 
 (defun make-node (head args &key (meta (synthetic-meta)))
   "The one public node constructor. Meta defaults to synthetic."
@@ -139,12 +152,14 @@ walked. When F turns a node into a scalar, recursion stops there."
 (defun node-equal (a b)
   "Structural equality on node trees, ignoring meta (provenance, not identity).
 Scalars compare by EQL (so 1 and 1.0 differ — this is tree equality, not the
-term-level `==` of SPEC §5.5); strings by STRING=."
+term-level `==` of SPEC §5.5); strings by STRING=; macro-call payloads by
+token content."
   (cond ((and (node-p a) (node-p b))
          (and (eq (node-head a) (node-head b))
               (= (length (node-args a)) (length (node-args b)))
               (every #'node-equal (node-args a) (node-args b))))
         ((and (stringp a) (stringp b)) (string= a b))
+        ((and (token-group-p a) (token-group-p b)) (token-group-equal a b))
         (t (eql a b))))
 
 ;;; --- opaque host printing --------------------------------------------------

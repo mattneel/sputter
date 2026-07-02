@@ -315,15 +315,82 @@ provenance, not identity). Returns a CL generalized boolean; sput-eq wraps."
 scalars lift to literals; nothing else fits in a syntax tree."
   (if (or (node-p v) (scalarp v))
       v
-      (rt-panic "cannot splice ~a into a quote (nodes and scalars only; `...name` splices lists of nodes, M5)"
+      (rt-panic "cannot splice ~a into a quote (nodes and scalars only; `...name` splices lists of nodes, M6)"
                 (show-value v))))
 
+;;; --- hygiene marks (SPEC §5.8.5) ---------------------------------------------------
+;;; The expander binds *expansion-mark* around each macro invocation;
+;;; template instantiation stamps it into meta.scopes of template-literal
+;;; nodes. Spliced values pass through untouched.
+
+(defvar *expansion-mark* nil)
+
+(defun marked-meta (m)
+  (%make-meta :file (meta-file m) :line (meta-line m) :col (meta-col m)
+              :scopes (cons *expansion-mark* (meta-scopes m))
+              :synthetic (meta-synthetic m)))
+
+(defun template-instantiate (x)
+  "Deep-copy a quoted template subtree, stamping the current expansion mark.
+Outside an expansion this is the identity (term-level quotes are unmarked)."
+  (if (null *expansion-mark*)
+      x
+      (labels ((walk (e)
+                 (if (node-p e)
+                     (make-node (node-head e)
+                                (mapcar #'walk (node-args e))
+                                :meta (marked-meta (node-meta e)))
+                     e)))
+        (walk x))))
+
 (defun %rebuild-node (head meta args)
-  "Quote-lowering support: rebuild a node around spliced children."
+  "Quote-lowering support: rebuild a node around spliced children (marked
+when inside an expansion — the rebuilt node is template text)."
   (dolist (a args)
-    (unless (or (node-p a) (scalarp a))
+    (unless (or (node-p a) (scalarp a) (token-group-p a))
       (rt-panic "cannot splice ~a into a quote" (show-value a))))
-  (make-node head args :meta meta))
+  (make-node head args
+             :meta (if *expansion-mark* (marked-meta meta) meta)))
+
+(defun %make-marked-ident (name meta)
+  "raw(name): a template-literal identifier, hygienic like any other
+template text (SPEC §5.8.3)."
+  (make-ident name :meta (if *expansion-mark* (marked-meta meta) meta)))
+
+(defun %make-unmarked-ident (name meta)
+  "inject(name): an identifier with no marks — it resolves at the call site
+(anaphora, SPEC §5.8.3)."
+  (make-ident name :meta (%make-meta :file (meta-file meta)
+                                     :line (meta-line meta)
+                                     :col (meta-col meta)
+                                     :synthetic (meta-synthetic meta))))
+
+;;; --- comptime ident builders (SPEC §5.8.3 bind-first idiom) -------------------------
+
+(defvar *gensym-ident-counter* 0)
+
+(defun sput-concat-ident (&rest parts)
+  "concat_ident: strings, atoms, and identifier nodes concatenate into a
+fresh (unmarked) identifier node."
+  (make-ident
+   (name-keyword
+    (apply #'concatenate 'string
+           (mapcar (lambda (p)
+                     (cond ((stringp p) p)
+                           ((keywordp p) (symbol-name p))
+                           ((ident-node-p p) (symbol-name (ident-name p)))
+                           (t (rt-panic "concat_ident wants strings, atoms, or identifiers, got ~a"
+                                        (show-value p)))))
+                   parts)))))
+
+(defun sput-gensym-ident (base)
+  (let ((base-name (cond ((stringp base) base)
+                         ((keywordp base) (symbol-name base))
+                         ((ident-node-p base) (symbol-name (ident-name base)))
+                         (t (rt-panic "gensym_ident wants a string, atom, or identifier, got ~a"
+                                      (show-value base))))))
+    (make-ident (name-keyword (format nil "~a__g~d" base-name
+                                      (incf *gensym-ident-counter*))))))
 
 (defun check-node (who x)
   (unless (node-p x)

@@ -1,0 +1,2 @@
+error: macro `bad` promised expr but expanded into a let node
+  at err_macro_kind.sput:5:1
