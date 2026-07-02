@@ -1,0 +1,2 @@
+error: comparison operators are non-chainable; parenthesize and combine with `and`
+  at err_chain.sput:1:15

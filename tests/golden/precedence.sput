@@ -1,0 +1,15 @@
+let a = 1 + 2 * 3;
+let b = (1 + 2) * 3;
+let c = -(1 + 2) * 3;
+let d = !(p == q);
+let e = x - y - z;
+let f = x - (y - z);
+let g = (p + q)(r);
+let h = obj.handler(x)[0].y;
+let i = 1 < 2 and 3 < 4 or flag;
+let j = (1 < 2) == flag;
+let k = s ++ t ++ "u";
+let l = x / y % z * w;
+let m = -x.f;
+let n = !p(q);
+let o = a |> f(b) |> g;

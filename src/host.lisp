@@ -19,3 +19,8 @@
 
 (defun host-exit (code)
   (sb-ext:exit :code code :abort nil))
+
+(defun host-print-backtrace (condition stream)
+  "Raw host condition + backtrace, for SPUTTER_HOST_BACKTRACE=1 only (SPEC §8)."
+  (format stream "~a~%" condition)
+  (sb-debug:print-backtrace :stream stream :count 50))

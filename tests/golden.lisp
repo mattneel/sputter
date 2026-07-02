@@ -6,6 +6,28 @@
 
 (in-package #:sputter.tests.golden)
 
+(defun run-golden-case (src mode args-fn expected-path)
+  (multiple-value-bind (actual code)
+      (h:run-cli (funcall args-fn src))
+    (declare (ignorable code))
+    (if (h:golden-update-p)
+        (progn
+          (with-open-file (s expected-path
+                             :direction :output
+                             :if-exists :supersede
+                             :if-does-not-exist :create)
+            (write-string actual s))
+          (ok t (format nil "updated ~a" (file-namestring expected-path))))
+        (let* ((expected (uiop:read-file-string expected-path))
+               (same (string= expected actual)))
+          (ok same
+              (format nil "~a [~a]~@[~%~a~]"
+                      (file-namestring src) mode
+                      (unless same (h:diff-report expected actual))))))
+    (ok (not (h:looks-like-sexp-p actual))
+        (format nil "~a [~a] stays above the Waterline"
+                (file-namestring src) mode))))
+
 (deftest golden-corpus
   (let ((cases 0))
     (dolist (src (h:golden-source-files))
@@ -13,24 +35,6 @@
             for expected-path = (h:expected-file src mode)
             when (probe-file expected-path)
               do (incf cases)
-                 (multiple-value-bind (actual code)
-                     (h:run-cli (funcall args-fn src))
-                   (declare (ignorable code))
-                   (if (h:golden-update-p)
-                       (progn
-                         (with-open-file (s expected-path
-                                            :direction :output
-                                            :if-exists :supersede
-                                            :if-does-not-exist :create)
-                           (write-string actual s))
-                         (ok t (format nil "updated ~a"
-                                       (file-namestring expected-path))))
-                       (let* ((expected (uiop:read-file-string expected-path))
-                              (same (string= expected actual)))
-                         (ok same
-                             (format nil "~a [~a]~@[~%~a~]"
-                                     (file-namestring src) mode
-                                     (unless same
-                                       (h:diff-report expected actual)))))))))
+                 (run-golden-case src mode args-fn expected-path)))
     (when (zerop cases)
       (ok t "golden corpus empty (cases arrive with M1)"))))

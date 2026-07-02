@@ -1,0 +1,12 @@
+fn area(w: f64, h: f64) f64 {
+    w * h
+}
+
+fn describe(user) {
+    var retries = 0;
+    retries += 1;
+
+    let sign = if user.karma < 0 { -1 } else { 1 };
+
+    area(sign, retries)
+}

@@ -12,6 +12,20 @@ ever emits them.")
    #:host-argv #:host-getenv #:host-exit
    ;; rt.lisp (grows in M2)
    #:+sput-false+ #:sput-false-p #:truthy
+   ;; conditions (SPEC §8)
+   #:sputter-error #:sputter-parse-error #:sputter-expand-error
+   #:sputter-lower-error #:sputter-panic
+   #:sputter-error-message #:sputter-error-file #:sputter-error-line
+   #:sputter-error-col #:sputter-error-at #:render-sputter-error
+   ;; lex.lisp
+   #:lex #:token #:token-p #:token-type #:token-value #:token-line
+   #:token-col #:token-text
+   ;; parse.lisp
+   #:parse-module #:parse-expression
+   ;; expand.lisp
+   #:expand-module
+   ;; print.lisp
+   #:print-module #:print-node #:*print-width*
    ;; node.lisp — the node model (SPEC §4)
    #:node #:node-p #:node-head #:node-meta #:node-args #:make-node
    #:meta #:meta-p #:meta-file #:meta-line #:meta-col #:meta-scopes

@@ -9,6 +9,10 @@
                (:file "host")
                (:file "rt")
                (:file "node")
+               (:file "lex")
+               (:file "parse")
+               (:file "expand")
+               (:file "print")
                (:file "cli"))
   :in-order-to ((asdf:test-op (asdf:test-op #:sputter/tests))))
 
@@ -19,6 +23,9 @@
   :components ((:file "harness")
                (:module "unit"
                 :components ((:file "node-test")
-                             (:file "cli-test")))
+                             (:file "cli-test")
+                             (:file "lex-test")
+                             (:file "parse-test")
+                             (:file "print-test")))
                (:file "golden"))
   :perform (asdf:test-op (o c) (uiop:symbol-call :rove :run c)))

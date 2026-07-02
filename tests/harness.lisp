@@ -10,17 +10,19 @@
   (:use #:cl)
   (:local-nicknames (#:impl #:sputter.impl))
   (:export #:+golden-modes+ #:golden-dir #:golden-source-files #:expected-file
-           #:golden-update-p #:run-cli #:diff-report))
+           #:golden-update-p #:run-cli #:diff-report #:looks-like-sexp-p))
 
 (in-package #:sputter.tests.harness)
 
 (defparameter +golden-modes+
   ;; mode name -> function of source pathname returning a CLI argv.
+  ;; Files are passed by bare name (run-cli binds *default-pathname-defaults*
+  ;; to the golden dir) so error spans in expected files stay machine-portable.
   ;; `show` maps onto the runner once `sput run` exists (M2).
-  (list (cons "expand" (lambda (f) (list "expand" (namestring f))))
-        (cons "dump" (lambda (f) (list "expand" "--dump" (namestring f))))
-        (cons "fmt" (lambda (f) (list "fmt" (namestring f))))
-        (cons "run" (lambda (f) (list "run" (namestring f))))))
+  (list (cons "expand" (lambda (f) (list "expand" (file-namestring f))))
+        (cons "dump" (lambda (f) (list "expand" "--dump" (file-namestring f))))
+        (cons "fmt" (lambda (f) (list "fmt" (file-namestring f))))
+        (cons "run" (lambda (f) (list "run" (file-namestring f))))))
 
 (defun golden-dir ()
   (asdf:system-relative-pathname :sputter "tests/golden/"))
@@ -43,8 +45,15 @@ Returns (values output-string exit-code)."
   (let ((out (make-string-output-stream)))
     (let* ((*standard-output* out)
            (*error-output* out)
+           (*default-pathname-defaults* (golden-dir))
            (code (impl:cli-dispatch argv)))
       (values (get-output-stream-string out) code))))
+
+(defun looks-like-sexp-p (s)
+  "Crude Waterline tripwire (SPEC §8): user-channel output must never look
+like host s-expressions or host objects."
+  (some (lambda (marker) (search marker s))
+        '("#<" "#S(" "SPUTTER." "(DEFUN" "(LAMBDA" "COMMON-LISP")))
 
 (defun diff-report (expected actual)
   "Cheap line-oriented diff for golden mismatches (host-side test output)."
