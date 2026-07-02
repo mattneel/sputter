@@ -1,0 +1,176 @@
+;;;; data-test.lisp — M3: atoms, tagged, lists, records, switch, |>, for..in.
+
+(defpackage #:sputter.tests.data
+  (:use #:cl #:rove)
+  (:local-nicknames (#:s #:sputter.impl)
+                    (#:a #:alexandria)))
+
+(in-package #:sputter.tests.data)
+
+(defun i (name) (s:make-ident name))
+(defun n (head &rest args) (s:make-node head args))
+(defun pe (src) (s:parse-expression src))
+
+(defun eval-src (src)
+  (s:reset-globals)
+  (let ((value nil))
+    (dolist (stmt (s:parse-module src :file "<test>") value)
+      (setf value (s:eval-top-form stmt)))))
+
+(defun run-src (src)
+  (with-output-to-string (*standard-output*)
+    (eval-src src)))
+
+(defmacro panics (src &optional search-text)
+  (a:with-gensyms (c)
+    `(let ((,c (handler-case (progn (eval-src ,src) nil)
+                 (s:sputter-panic (,c) ,c))))
+       (ok ,c (format nil "~s panics" ,src))
+       ,@(when search-text
+           `((ok (search ,search-text (s:sputter-error-message ,c))
+                 (format nil "…mentioning ~s" ,search-text)))))))
+
+(deftest parse-shapes
+  (ok (eq (pe ".ok") :|ok|) "prefix .name is an atom scalar")
+  (ok (s:node-equal (pe ".ok(1, x)")
+                    (n :tagged_lit :|ok| 1 (i "x")))
+      "atom + parens is a tagged literal")
+  (ok (s:node-equal (pe ".{ .a = 1, .b = x }")
+                    (n :record_lit
+                       (n :field_init :|a| 1)
+                       (n :field_init :|b| (i "x"))))
+      "record literals carry field_init nodes")
+  (ok (s:node-equal (pe ".{}") (n :record_lit)) "empty record")
+  (ok (s:node-equal (pe "[1, x, ...rest]")
+                    (n :list_lit 1 (i "x") (n :spread (i "rest"))))
+      "list literals with spread")
+  (ok (s:node-equal (pe "switch x { 1 => a, else => b }")
+                    (n :switch (i "x")
+                       (n :arm 1 (i "a"))
+                       (n :arm (i "_") (i "b"))))
+      "switch arms; else is sugar for _")
+  (ok (s:node-equal (first (s:parse-module "for x in xs { f(x); }"))
+                    (n :for_in (i "x") (i "xs")
+                       (n :block (n :call (i "f") (i "x")) nil)))
+      "for..in shape"))
+
+(deftest parse-pattern-shapes
+  (flet ((arm-pattern (src)
+           (first (s:node-args (second (s:node-args (pe src)))))))
+    (ok (s:node-equal (arm-pattern "switch x { .ok(v) => v }")
+                      (n :tagged_lit :|ok| (i "v")))
+        "tagged patterns")
+    (ok (s:node-equal (arm-pattern "switch x { .{ .role = .admin, .name = nm } => nm }")
+                      (n :record_lit
+                         (n :field_init :|role| :|admin|)
+                         (n :field_init :|name| (i "nm"))))
+        "record patterns")
+    (ok (s:node-equal (arm-pattern "switch x { [a, ...rest] => a }")
+                      (n :list_lit (i "a") (n :spread (i "rest"))))
+        "list patterns with tails")
+    (ok (eql (arm-pattern "switch x { -3 => 1 }") -3)
+        "negated number literals are patterns"))
+  (ok (signals (s:parse-module "switch x { [...rest, a] => 1 }")
+               's:sputter-parse-error)
+      "...rest must be last in a list pattern")
+  (ok (signals (s:parse-module "switch x { -\"s\" => 1 }")
+               's:sputter-parse-error)
+      "patterns only negate numbers")
+  (ok (signals (s:parse-module "switch x { 1 => a 2 => b }")
+               's:sputter-parse-error)
+      "expression arms need commas"))
+
+(deftest data-at-runtime
+  (ok (eq (eval-src ".ok;") :|ok|))
+  (ok (equal (eval-src "[1, 2] ++ [3];") '(1 2 3)))
+  (ok (equal (eval-src "[1, ...[2, 3], 4];") '(1 2 3 4)) "spread splices")
+  (ok (eql (eval-src "let r = .{ .a = 5, .b = 2 }; r.a + r.b;") 7)
+      "record field access")
+  (ok (eql (eval-src "[10, 20, 30][1];") 20) "list indexing")
+  (ok (eq (eval-src ".ok(1).tag;") :|ok|) "tagged .tag")
+  (panics "let r = .{ .a = 1 }; r.b;" "no field .b")
+  (panics "[1][5];" "out of bounds")
+  (panics "[...42];" "cannot spread")
+  (ok (signals (eval-src "let r = .{ .a = 1, .a = 2 };") 's:sputter-lower-error)
+      "duplicate record fields are compile errors"))
+
+(deftest structural-equality
+  (ok (eq (eval-src ".{ .a = 1, .b = 2 } == .{ .b = 2, .a = 1 };") t)
+      "record == ignores insertion order")
+  (ok (s:sput-false-p (eval-src ".{ .a = 1 } == .{ .a = 1, .b = 2 };"))
+      "extra fields break equality")
+  (ok (eq (eval-src ".ok(1) == .ok(1.0);") t)
+      "tagged == recurses with numeric ==")
+  (ok (s:sput-false-p (eval-src ".ok(1) == .err(1);")))
+  (ok (eq (eval-src "[1, [2]] == [1.0, [2.0]];") t) "deep list ==")
+  (ok (eq (eval-src "[] == nil;") t)
+      "[] and nil are the same value in v0.1 (spec-pinned representation)"))
+
+(deftest switch-semantics
+  (ok (equal (eval-src "switch .ok(7) { .ok(v) => v + 1, .err(e) => e };") 8)
+      "tagged destructuring binds")
+  (ok (equal (eval-src "switch .err(.not_found) {
+                          .ok(v) => \"yes\",
+                          .err(.not_found) => \"who?\",
+                          .err(reason) => \"other\",
+                        };")
+             "who?")
+      "nested atom patterns match by ==")
+  (ok (equal (eval-src "switch .{ .role = .admin, .name = \"amy\" } {
+                          .{ .role = .admin, .name = nm } => nm,
+                          else => \"nobody\",
+                        };")
+             "amy")
+      "record patterns match at-least fields")
+  (ok (eql (eval-src "switch [1, 2, 3] { [a, b, c] => a + b + c };") 6)
+      "exact list patterns")
+  (ok (equal (eval-src "switch [1, 2, 3] { [head, ...tail] => tail };") '(2 3))
+      "tail patterns bind the rest")
+  (ok (eq (eval-src "switch [] { [] => .empty, else => .full };") :|empty|)
+      "empty list pattern")
+  (ok (equal (eval-src "switch 1 { 1.0 => \"unified\", else => \"no\" };") "unified")
+      "literal patterns match with numeric ==")
+  (ok (eql (eval-src "switch 5 { x => x + 1 };") 6) "bare identifiers bind")
+  (ok (equal (eval-src "let x = 9; switch 5 { x => x };") 5)
+      "pattern binders shadow outer bindings")
+  (ok (eql (eval-src "switch 2 { 2 => .first, 2.0 => .second };") :|first|)
+      "first matching arm wins")
+  (panics "switch 42 { 1 => 1 };" "no switch arm matched 42")
+  (ok (signals (eval-src "switch .ok(1) { .ok(v, w) => v };") 's:sputter-panic)
+      "tagged arity is checked (no match)")
+  (ok (signals (eval-src "switch [1, 1] { [a, a] => a };") 's:sputter-lower-error)
+      "duplicate binders in one pattern are compile errors"))
+
+(deftest pipelines
+  (ok (eql (eval-src "fn add(a, b) { a + b } 2 |> add(3);") 5)
+      "insert-first desugar")
+  (ok (eql (eval-src "fn double(x) { x * 2 } 5 |> double;") 10)
+      "bare callee gets one arg")
+  (ok (eql (eval-src "[1, 2, 3, 4] |> filter(fn(x) { x % 2 == 0 }) |> map(fn(x) { x * 10 }) |> sum();")
+           60)
+      "chains thread left to right"))
+
+(deftest for-in
+  (ok (eql (eval-src "var total = 0; for x in [1, 2, 3] { total += x; } total;") 6))
+  (ok (null (eval-src "for x in [] { panic(\"never\"); };"))
+      "empty lists loop zero times, value nil")
+  (ok (signals (eval-src "for x in [1] { x = 2; }") 's:sputter-lower-error)
+      "the binder is immutable")
+  (panics "for x in 42 { }" "for..in iterates lists"))
+
+(deftest show-m3
+  (ok (equal (eval-src "show(.{ .b = 2, .a = 1 });") ".{ .b = 2, .a = 1 }")
+      "records show in insertion order")
+  (ok (equal (eval-src "show(.ok(1, \"x\"));") ".ok(1, \"x\")"))
+  (ok (equal (eval-src "show(.{});") ".{}"))
+  (ok (equal (eval-src "show([[1], .err(nil)]);") "[[1], .err(nil)]"))
+  (ok (equal (eval-src "show([]);") "nil")
+      "[] shows as nil (same value in v0.1)"))
+
+(deftest prelude-collections
+  (ok (eql (eval-src "len([1, 2, 3]);") 3))
+  (ok (eql (eval-src "len(\"hello\");") 5))
+  (ok (eql (eval-src "len(.{ .a = 1 });") 1))
+  (ok (equal (eval-src "reduce([1, 2, 3], 10, fn(acc, x) { acc + x });") 16))
+  (panics "sum([1, \"a\"]);")
+  (panics "map(42, fn(x) { x });" "map wants a list"))

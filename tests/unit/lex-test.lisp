@@ -93,3 +93,11 @@
   (lex-fails "~")
   (lex-fails "@")
   (lex-fails "$"))
+
+(deftest review-regressions
+  (lex-fails "1_")                      ; underscores go between digits
+  (lex-fails "1__0")
+  (lex-fails "0x1_")
+  (lex-fails "1.0e999")                 ; overflow is a Sputter error
+  (lex-fails "λx")                      ; identifiers are ASCII (§5.1)
+  (ok (equal (tvalues "1_0") '(10 nil)) "well-placed underscores still work"))

@@ -71,10 +71,12 @@
 ;;; --- character classes -------------------------------------------------------
 
 (defun ident-start-p (ch)
-  (and ch (or (alpha-char-p ch) (char= ch #\_))))
+  ;; ASCII only, per the spec's [A-Za-z_][A-Za-z0-9_]* (§5.1) — no Unicode
+  ;; identifiers in v0.1.
+  (and ch (or (char<= #\a ch #\z) (char<= #\A ch #\Z) (char= ch #\_))))
 
 (defun ident-char-p (ch)
-  (and ch (or (alphanumericp ch) (char= ch #\_))))
+  (and ch (or (ident-start-p ch) (char<= #\0 ch #\9))))
 
 (defun dec-digit-p (ch)
   (and ch (digit-char-p ch 10)))
@@ -128,9 +130,16 @@
              (unless (funcall pred (lx-peek lx))
                (lex-error lx (lexer-line lx) (lexer-col lx)
                           "expected ~a in number literal" what))
-             (loop while (or (funcall pred (lx-peek lx))
-                             (eql (lx-peek lx) #\_))
-                   do (lx-advance lx)))
+             (let ((run-start (lexer-pos lx)))
+               (loop while (or (funcall pred (lx-peek lx))
+                               (eql (lx-peek lx) #\_))
+                     do (lx-advance lx))
+               ;; underscores group digits: never trailing, never doubled
+               (let ((run (subseq (lexer-source lx) run-start (lexer-pos lx))))
+                 (when (or (char= (char run (1- (length run))) #\_)
+                           (search "__" run))
+                   (lex-error lx line col
+                              "misplaced `_` in number literal (underscores go between digits)")))))
            (lexeme () (subseq (lexer-source lx) start (lexer-pos lx))))
       (cond
         ;; hex: 0x...
@@ -162,19 +171,25 @@
            (when (ident-start-p (lx-peek lx))
              (lex-error lx line col "malformed number literal `~a...`" (lexeme)))
            (if floatp
-               (%make-token :float (parse-float-literal (remove #\_ (lexeme)))
+               (%make-token :float
+                            (or (parse-float-literal (remove #\_ (lexeme)))
+                                (lex-error lx line col
+                                           "float literal `~a` is out of range"
+                                           (lexeme)))
                             line col (lexeme))
                (%make-token :int (parse-integer (remove #\_ (lexeme)))
                             line col (lexeme)))))))))
 
 (defun parse-float-literal (text)
-  "Parse a lexer-validated float literal into a double-float."
-  (let ((*read-eval* nil)
-        (*read-default-float-format* 'double-float))
-    (let ((value (read-from-string text)))
-      (assert (typep value 'double-float) (value)
-              "float literal did not read as a double: ~s" text)
-      value)))
+  "Parse a lexer-validated float literal into a double-float; NIL when the
+host reader rejects it (overflow like 1.0e999 must surface as a Sputter
+error, not a host reader-error)."
+  (handler-case
+      (let ((*read-eval* nil)
+            (*read-default-float-format* 'double-float))
+        (let ((value (read-from-string text)))
+          (and (typep value 'double-float) value)))
+    (error () nil)))
 
 ;;; --- words ---------------------------------------------------------------------
 

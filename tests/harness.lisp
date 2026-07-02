@@ -8,9 +8,11 @@
 
 (defpackage #:sputter.tests.harness
   (:use #:cl)
-  (:local-nicknames (#:impl #:sputter.impl))
+  (:local-nicknames (#:impl #:sputter.impl)
+                    (#:a #:alexandria))
   (:export #:+golden-modes+ #:golden-dir #:golden-source-files #:expected-file
-           #:golden-update-p #:run-cli #:diff-report #:looks-like-sexp-p))
+           #:golden-update-p #:run-cli #:diff-report #:looks-like-sexp-p
+           #:exit-code-ok-p))
 
 (in-package #:sputter.tests.harness)
 
@@ -54,6 +56,14 @@ Returns (values output-string exit-code)."
 like host s-expressions or host objects."
   (some (lambda (marker) (search marker s))
         '("#<" "#S(" "SPUTTER." "(DEFUN" "(LAMBDA" "COMMON-LISP")))
+
+(defun exit-code-ok-p (src code)
+  "Exit-code discipline: err_* sources must fail (their goldens are error
+renderings); everything else must exit 0. Update mode refuses to bake a
+violation into an expected file."
+  (if (a:starts-with-subseq "err_" (pathname-name src))
+      (plusp code)
+      (zerop code)))
 
 (defun diff-report (expected actual)
   "Cheap line-oriented diff for golden mismatches (host-side test output)."

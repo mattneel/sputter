@@ -30,20 +30,29 @@
 
 (defparameter +plasma-heads+
   '(:p.lit :p.ref :p.call :p.host_call :p.fn :p.param :p.if :p.let :p.assign
-    :p.block :p.match :p.list :p.record :p.tagged :p.field :p.index :p.while
-    :p.return :p.and :p.or :p.panic)
-  "The closed Plasma head set (SPEC §6; p.param is a structural addition,
-see DECISIONS.md).")
+    :p.block :p.match :p.arm :p.list :p.record :p.tagged :p.field :p.index
+    :p.while :p.return :p.and :p.or :p.panic)
+  "The closed Plasma head set (SPEC §6; p.param and p.arm are structural
+additions — children of p.fn/p.match, not expression forms; DECISIONS.md).")
 
 (defun validate-plasma (x)
   "Negative space (SPEC §6): the emitter's input contains Plasma heads only —
-no surface heads, no macro-space heads."
-  (prewalk x (lambda (e)
-               (when (node-p e)
-                 (assert (member (node-head e) +plasma-heads+) ()
-                         "non-Plasma head ~a reached the emitter" (node-head e)))
-               e))
-  x)
+no surface heads, no macro-space heads. Exception: p.match keeps structured
+*patterns* (SPEC §6 note) — a p.arm's first arg is surface-pattern shaped and
+is validated by the emitter's pattern translator instead."
+  (cond
+    ((not (node-p x)) x)
+    ((eq (node-head x) :p.match)
+     (validate-plasma (first (node-args x)))
+     (dolist (arm (rest (node-args x)) x)
+       (assert (eq (node-head arm) :p.arm) ()
+               "p.match children must be p.arm, got ~a" (node-head arm))
+       (validate-plasma (second (node-args arm)))))
+    (t
+     (assert (member (node-head x) +plasma-heads+) ()
+             "non-Plasma head ~a reached the emitter" (node-head x))
+     (dolist (a (node-args x) x)
+       (validate-plasma a)))))
 
 ;;; --- globals (Lisp-1 on Lisp-2, SPEC §7) ---------------------------------------
 
@@ -313,8 +322,136 @@ bindings extend the environment for the statements that follow."
            (:fn (lower-fn node env :name nil))
            (:unreachable
             (pl :p.panic node (list (pl :p.lit node (list "reached unreachable code")))))
-           (:pipe (lower-error node "`|>` pipelines lower in M3; not supported yet"))
+           (:pipe
+            ;; Elixir insert-first desugar (SPEC §5.3): x |> f(a) -> f(x, a);
+            ;; x |> f -> f(x). Done here, not the parser — macros see .pipe.
+            (destructuring-bind (lhs rhs) args
+              (lower-expr
+               (if (and (node-p rhs) (eq (node-head rhs) :call))
+                   (make-node :call
+                              (list* (first (node-args rhs)) lhs
+                                     (rest (node-args rhs)))
+                              :meta (node-meta rhs))
+                   (make-node :call (list rhs lhs) :meta (node-meta node)))
+               env)))
+           (:tagged_lit
+            (pl :p.tagged node
+                (cons (first args)
+                      (mapcar (lambda (e) (lower-expr e env)) (rest args)))))
+           (:record_lit (lower-record node env))
+           (:list_lit (lower-list node env))
+           (:switch (lower-switch node env))
+           (:for_in (lower-for node env))
            ((:let :var :assign :op_assign :return)
             (lower-error node "~(~a~) is a statement, not an expression" head))
            (t (assert nil (node)
                       "lowerer got a head it does not know: ~a" head))))))))
+
+;;; --- data literals ---------------------------------------------------------------
+
+(defun lower-record (node env)
+  (let ((kvs '())
+        (seen '()))
+    (dolist (fi (node-args node))
+      (destructuring-bind (k v) (node-args fi)
+        (when (member k seen)
+          (lower-error fi "duplicate field .~a in record literal" (symbol-name k)))
+        (push k seen)
+        (push k kvs)
+        (push (lower-expr v env) kvs)))
+    (pl :p.record node (nreverse kvs))))
+
+(defun lower-list (node env)
+  (let ((elems (node-args node)))
+    (if (notany (lambda (e) (and (node-p e) (eq (node-head e) :spread))) elems)
+        (pl :p.list node (mapcar (lambda (e) (lower-expr e env)) elems))
+        ;; spreads: split into literal runs and spread segments, append them
+        (let ((segments '())
+              (run '()))
+          (flet ((flush-run ()
+                   (when run
+                     (push (pl :p.list node (nreverse run)) segments)
+                     (setf run '()))))
+            (dolist (e elems)
+              (if (and (node-p e) (eq (node-head e) :spread))
+                  (progn (flush-run)
+                         (push (lower-expr (first (node-args e)) env) segments))
+                  (push (lower-expr e env) run)))
+            (flush-run))
+          (pl :p.host_call node
+              (cons 'sput-list-append (nreverse segments)))))))
+
+;;; --- switch (SPEC §5.6) ------------------------------------------------------------
+
+(defun pattern-binders (pattern)
+  "The names a term pattern binds, in order. Bare identifiers bind; `_`
+doesn't; literals/atoms match by ==."
+  (cond
+    ((not (node-p pattern)) '())
+    (t
+     (case (node-head pattern)
+       (:ident (let ((name (ident-name pattern)))
+                 (if (string= (symbol-name name) "_") '() (list name))))
+       (:tagged_lit (a:mappend #'pattern-binders (rest (node-args pattern))))
+       (:record_lit
+        (a:mappend (lambda (fi) (pattern-binders (second (node-args fi))))
+                   (node-args pattern)))
+       (:list_lit (a:mappend #'pattern-binders (node-args pattern)))
+       (:spread (pattern-binders (first (node-args pattern))))
+       (t '())))))
+
+(defun lower-switch (node env)
+  (destructuring-bind (scrutinee . arms) (node-args node)
+    (pl :p.match node
+        (cons (lower-expr scrutinee env)
+              (mapcar
+               (lambda (arm)
+                 (destructuring-bind (pattern body) (node-args arm)
+                   (let ((binders (pattern-binders pattern))
+                         (arm-env env))
+                     (a:when-let ((dup (find-duplicate binders)))
+                       (lower-error arm "pattern binds `~a` more than once"
+                                    (symbol-name dup)))
+                     (dolist (b binders)
+                       (setf arm-env (lenv-extend arm-env b :let)))
+                     (pl :p.arm arm (list pattern (lower-expr body arm-env))))))
+               arms)))))
+
+(defun find-duplicate (names)
+  (loop for (n . rest) on names
+        when (member n rest :test #'eq) return n))
+
+;;; --- for..in desugar (SPEC §5.4, §6) -------------------------------------------------
+
+(defvar *fresh-counter* 0)
+
+(defun fresh-name (base)
+  "A name no surface program can collide with (`#` never lexes into idents)."
+  (name-keyword (format nil "~a#~d" base (incf *fresh-counter*))))
+
+(defun lower-for (node env)
+  (destructuring-bind (binder iter body) (node-args node)
+    (let* ((cursor (fresh-name "for"))
+           (binder-kw (ident-name binder))
+           (cursor-env (lenv-extend env cursor :var))
+           (body-env (lenv-extend cursor-env binder-kw :let))
+           (cursor-ref (pl :p.ref node (list cursor :local))))
+      (pl :p.block node
+          (list (pl :p.let node
+                    (list cursor nil
+                          (pl :p.host_call node
+                              (list 'sput-check-list (lower-expr iter env)))))
+                (pl :p.while node
+                    (list cursor-ref   ; a non-empty list is truthy, [] is nil
+                          (pl :p.block node
+                              (list (pl :p.let node
+                                        (list binder-kw nil
+                                              (pl :p.host_call node
+                                                  (list 'car cursor-ref))))
+                                    (lower-block body body-env)
+                                    (pl :p.assign node
+                                        (list cursor :local
+                                              (pl :p.host_call node
+                                                  (list 'cdr cursor-ref))))
+                                    (pl :p.lit node (list nil))))))
+                (pl :p.lit node (list nil)))))))

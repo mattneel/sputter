@@ -68,7 +68,7 @@ Working through the v0.1 milestones (SPEC.md §11):
 - [x] M0 — skeleton: node model, test harness, CLI shim
 - [x] M1 — parse + print the macro-free core
 - [x] M2 — lower + emit + run via SBCL
-- [ ] M3 — data (atoms, tagged, lists, records) + `switch` + pipelines
+- [x] M3 — data (atoms, tagged, lists, records) + `switch` + pipelines
 - [ ] M4 — nodes as first-class values (`quote`, `dump`, `print`)
 - [ ] M5 — procedural macros (`macro fn`), hygiene
 - [ ] M6 — by-example macros (`macro name { pattern => template }`)

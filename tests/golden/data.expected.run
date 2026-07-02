@@ -1,0 +1,13 @@
+.{ .name = "amy", .roles = [.admin, .ops] }
+.ops
+2
+[1, 2, 3, 4]
+[0, 1, 2, 3, 4]
+10
+20
+8
+.pair(1, [2, 3])
+"amy"
+true
+true
+30

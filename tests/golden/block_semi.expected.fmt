@@ -1,0 +1,10 @@
+fn f(c) {
+    if c { 1 } else { 2 };
+}
+
+fn g(c) {
+    if c { 1 } else { 2 }
+}
+
+println(show(f(true)));
+println(show(g(true)));

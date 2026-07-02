@@ -1,0 +1,25 @@
+fn area(w: f64, h: f64) f64 {
+    w * h
+}
+
+fn describe(user) {
+    let status = .ok;
+    let found = .ok(user.id);
+    let account = .{ .name = "amy", .roles = [.admin, .ops] };
+
+    var retries = 0;
+    retries += 1;
+
+    let sign = if user.karma < 0 { -1 } else { 1 };
+
+    let total = user.orders
+        |> filter(is_paid)
+        |> map(fn(o) { o.amount })
+        |> sum();
+
+    switch fetch(user.id) {
+        .ok(profile) => greet(profile, total),
+        .err(.not_found) => "who?",
+        .err(reason) => fallback(reason),
+    }
+}

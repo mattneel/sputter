@@ -1,0 +1,2 @@
+error: no switch arm matched .err(.timeout)
+  at err_nomatch.sput:1:15

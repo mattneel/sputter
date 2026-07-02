@@ -1,0 +1,27 @@
+fn is_paid(o) { o.paid }
+
+fn fetch(id) {
+    if id == 42 { .ok(.{ .name = "amy" }) } else { .err(.not_found) }
+}
+
+fn greet(profile, total) { profile.name ++ " owes " ++ show(total) }
+
+fn fallback(reason) { "fallback: " ++ show(reason) }
+
+fn describe(user) {
+    let sign = if user.karma < 0 { -1 } else { 1 };
+
+    let total = user.orders
+        |> filter(is_paid)
+        |> map(fn(o) { o.amount })
+        |> sum();
+
+    switch fetch(user.id) {
+        .ok(profile) => greet(profile, total * sign),
+        .err(.not_found) => "who?",
+        .err(reason) => fallback(reason),
+    }
+}
+
+println(describe(.{ .id = 42, .karma = 5, .orders = [.{ .amount = 10, .paid = true }, .{ .amount = 5, .paid = false }] }));
+println(describe(.{ .id = 7, .karma = -1, .orders = [] }));

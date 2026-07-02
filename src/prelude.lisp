@@ -8,7 +8,13 @@
 (defparameter +prelude-builtins+
   '(("println" . sput-println)
     ("show" . sput-show)
-    ("panic" . sput-panic-builtin))
+    ("panic" . sput-panic-builtin)
+    ;; collections (SPEC §11 M7 names them; the §10.1 tour needs them now)
+    ("map" . sput-map)
+    ("filter" . sput-filter)
+    ("reduce" . sput-reduce)
+    ("sum" . sput-sum)
+    ("len" . sput-len))
   "Sputter name -> implementation symbol. Every entry is a function (values,
 not macros — the cl. bridge and the prelude are functions-only, SPEC §7).")
 

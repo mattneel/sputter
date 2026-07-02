@@ -1,7 +1,9 @@
-;;;; print.lisp — print / dump / show (SPEC §5.7). M1 ships `print`:
-;;;; the canonical surface pretty-printer. Contract: parse(print(n)) ≡ n
-;;;; modulo meta; minimal parens (I8); canonical layout (4-space indent).
-;;;; dump/show arrive with M3/M4.
+;;;; print.lisp — print / dump / show (SPEC §5.7).
+;;;; `print`: the canonical surface pretty-printer. Contract:
+;;;; parse(print(n)) ≡ n modulo meta; minimal parens (I8) — but *sufficient*
+;;;; parens: statement-position and condition-position reparse hazards are
+;;;; the printer's problem too; canonical layout (4-space indent, one switch
+;;;; arm per line, trailing commas on multiline lists).
 
 (in-package #:sputter.impl)
 
@@ -10,10 +12,16 @@
 
 (defconstant +indent-step+ 4)
 
+(defvar *force-inline* nil
+  "Correctness fallback: when true, must-break constructs (switch, long pipe
+chains, multi-item blocks) render inline anyway. Used where the grammar
+offers no multiline form — a long line beats a crash or wrong output.")
+
 ;;; --- literals ---------------------------------------------------------------
 
 (defun literal-string (x)
-  "Render a scalar as a Sputter literal."
+  "Render a scalar as a Sputter literal (negative numbers included: the
+parser folds `-1` back into the scalar, so this round-trips)."
   (cond ((eq x t) "true")
         ((null x) "nil")
         ((sput-false-p x) "false")
@@ -45,10 +53,7 @@
                       (write-char ch out)))))
     (write-char #\" out)))
 
-;;; --- expression rendering (inline) -------------------------------------------
-;;; render-expr returns the unbroken string, or NIL when the node must break
-;;; (switch and long pipe chains, from M3 on). REQ is the binding tightness
-;;; the context requires; parens appear exactly where the tree demands (I8).
+;;; --- head classification --------------------------------------------------------
 
 (defparameter +binop-info+
   ;; head -> (text tightness), tightest 9 (postfix) … loosest 2 (|>)
@@ -64,12 +69,49 @@
 (defparameter +brace-stmt-heads+ '(:if :while :block :fn :switch :for_in)
   "Heads whose statement form is }-terminated and takes no trailing `;`.")
 
+(defparameter +stmt-only-heads+ '(:let :var :assign :op_assign :return))
+
+(defparameter +stmt-stopper-heads+ '(:if :while :switch :for_in :block)
+  "Constructs that, at statement start, parse as whole statements: an
+expression *beginning* with one of these must print parenthesized or it
+re-parses differently (the fmt-round-trip hazard the M1 review caught).")
+
+(defun expr-leading-stopper-p (x)
+  "Would X's printed text *begin* with a statement-stopper construct?"
+  (and (node-p x)
+       (let ((head (node-head x)))
+         (cond ((member head +stmt-stopper-heads+) t)
+               ((binop-info head) (expr-leading-stopper-p (first (node-args x))))
+               ((member head '(:call :index :field))
+                (expr-leading-stopper-p (first (node-args x))))
+               (t nil)))))
+
+(defun cond-needs-parens-p (x)
+  "Paren-free condition/scrutinee positions parse with the no-brace rule:
+any bare block primary in there (outside self-delimiting constructs and
+bracketed argument positions) makes the text unparseable without parens."
+  (and (node-p x)
+       (let ((head (node-head x)) (args (node-args x)))
+         (cond ((eq head :block) t)
+               ;; self-delimiting: their braces belong to their own grammar
+               ((member head '(:if :while :switch :for_in :fn
+                               :record_lit :list_lit :tagged_lit))
+                nil)
+               ((member head '(:not :neg)) (cond-needs-parens-p (first args)))
+               ((member head '(:call :index :field))
+                ;; arguments/indexes sit inside their own delimiters
+                (cond-needs-parens-p (first args)))
+               ((binop-info head)
+                (or (cond-needs-parens-p (first args))
+                    (cond-needs-parens-p (second args))))
+               (t nil)))))
+
 (defun maybe-paren (s own req)
   (if (< own req) (concatenate 'string "(" s ")") s))
 
-(defun join-strings (parts sep)
-  (when (every #'identity parts)
-    (format nil (format nil "~~{~~a~~^~a~~}" sep) parts)))
+;;; --- expression rendering (inline) -------------------------------------------
+;;; render-expr returns the unbroken string, or NIL when the node must break
+;;; (switch, multi-pipe chains, multi-item blocks) — unless *force-inline*.
 
 (defun render-expr (x req)
   (cond
@@ -79,13 +121,16 @@
            (args (node-args x)))
        (a:if-let ((info (binop-info head)))
          (destructuring-bind (op-text own) (rest info)
-           (declare (ignorable op-text))
-           (let* ((cmp (member head +cmp-heads+))
-                  (lhs (render-expr (first args) (if cmp (1+ own) own)))
-                  (rhs (render-expr (second args) (1+ own))))
-             (when (and lhs rhs)
-               (maybe-paren (format nil "~a ~a ~a" lhs (second info) rhs)
-                            own req))))
+           (if (and (eq head :pipe)
+                    (pipe-chain-p x)
+                    (not *force-inline*))
+               nil                      ; ≥2 |> stages: canonical form breaks
+               (let* ((cmp (member head +cmp-heads+))
+                      (lhs (render-expr (first args) (if cmp (1+ own) own)))
+                      (rhs (render-expr (second args) (1+ own))))
+                 (when (and lhs rhs)
+                   (maybe-paren (format nil "~a ~a ~a" lhs op-text rhs)
+                                own req)))))
          (case head
            (:ident (symbol-name (ident-name x)))
            (:not (a:when-let ((s (render-expr (first args) 8)))
@@ -109,34 +154,67 @@
                            9 req)))
            (:block (render-block-inline x))
            (:if (render-if-inline x))
-           (:while
-            (let ((c (render-cond (first args)))
-                  (b (render-block-inline (second args))))
-              (when (and c b) (format nil "while ~a ~a" c b))))
+           ((:while :for_in)
+            (let ((header (render-loop-header x))
+                  (body (render-block-inline (a:lastcar args))))
+              (when (and header body) (format nil "~a ~a" header body))))
            (:fn (render-fn-inline x))
+           (:switch (when *force-inline* (render-switch-inline x)))
+           (:tagged_lit
+            (let ((vals (mapcar (lambda (e) (render-expr e 0)) (rest args))))
+              (when (every #'identity vals)
+                (format nil ".~a(~{~a~^, ~})" (symbol-name (first args)) vals))))
+           (:record_lit
+            (let ((fields (mapcar #'render-field-init-inline args)))
+              (when (every #'identity fields)
+                (if fields
+                    (format nil ".{ ~{~a~^, ~} }" fields)
+                    ".{}"))))
+           (:field_init (render-field-init-inline x))
+           (:list_lit
+            (let ((elems (mapcar (lambda (e) (render-expr e 0)) args)))
+              (when (every #'identity elems)
+                (format nil "[~{~a~^, ~}]" elems))))
+           (:spread
+            (a:when-let ((s (render-expr (first args) 0)))
+              (concatenate 'string "..." s)))
            (:unreachable "unreachable")
            (:param (render-param x))
            (:type_ident (symbol-name (first args)))
+           (:arm (render-arm-inline x))
            ((:let :var :assign :op_assign :return)
             (assert nil (x) "statement head ~a reached expression rendering" head))
            (t (assert nil (x) "printer got a head it cannot render: ~a" head))))))))
 
+(defun pipe-chain-p (x)
+  "≥2 |> stages (the lhs of a pipe is itself a pipe)."
+  (and (node-p x) (eq (node-head x) :pipe)
+       (node-p (first (node-args x)))
+       (eq (node-head (first (node-args x))) :pipe)))
+
+(defun render-field-init-inline (fi)
+  (destructuring-bind (name value) (node-args fi)
+    (a:when-let ((v (render-expr value 0)))
+      (format nil ".~a = ~a" (symbol-name name) v))))
+
+(defun render-loop-header (x)
+  (ecase (node-head x)
+    (:while (format nil "while ~a" (render-cond (first (node-args x)))))
+    (:for_in
+     (destructuring-bind (binder iter body) (node-args x)
+       (declare (ignore body))
+       (format nil "for ~a in ~a"
+               (symbol-name (ident-name binder)) (render-cond iter))))))
+
 (defun render-cond (c)
-  "Paren-free condition position: guard expressions whose *text* would start
-with `{` (the parser gives braces there to the body)."
-  (a:when-let ((s (render-expr c 0)))
-    (if (starts-with-lbrace-p c)
+  "Paren-free condition/scrutinee position: never NIL, parenthesized when
+the no-brace rule demands it."
+  (let ((s (or (render-expr c 0)
+               (let ((*force-inline* t)) (render-expr c 0)))))
+    (assert s (c) "condition rendered as nothing")
+    (if (cond-needs-parens-p c)
         (concatenate 'string "(" s ")")
         s)))
-
-(defun starts-with-lbrace-p (x)
-  (and (node-p x)
-       (let ((head (node-head x)) (args (node-args x)))
-         (cond ((eq head :block) t)
-               ((binop-info head) (starts-with-lbrace-p (first args)))
-               ((member head '(:call :index :field))
-                (starts-with-lbrace-p (first args)))
-               (t nil)))))
 
 (defun render-if-inline (x)
   (destructuring-bind (c then else) (node-args x)
@@ -156,10 +234,10 @@ with `{` (the parser gives braces there to the body)."
          (body (a:lastcar args))
          (ret (a:lastcar (butlast args)))
          (params (subseq args 1 (- (length args) 2))))
-    (let ((ps (join-strings (mapcar #'render-param params) ", "))
+    (let ((ps (mapcar #'render-param params))
           (bs (render-block-inline body)))
-      (when (and ps bs)
-        (format nil "fn~@[ ~a~](~a)~@[ ~a~] ~a"
+      (when bs
+        (format nil "fn~@[ ~a~](~{~a~^, ~})~@[ ~a~] ~a"
                 (and name (symbol-name (ident-name name)))
                 ps
                 (and ret (render-expr ret 0))
@@ -171,26 +249,62 @@ with `{` (the parser gives braces there to the body)."
         (format nil "~a: ~a" (symbol-name (ident-name name)) (render-expr type 0))
         (symbol-name (ident-name name)))))
 
+(defun render-switch-inline (x)
+  "Inline switch — the *force-inline* fallback only; canonical form breaks."
+  (let ((scrutinee (render-cond (first (node-args x))))
+        (arms (mapcar #'render-arm-inline (rest (node-args x)))))
+    (when (every #'identity arms)
+      (format nil "switch ~a {~{ ~a,~} }" scrutinee arms))))
+
+(defun render-arm-inline (arm)
+  (destructuring-bind (pattern body) (node-args arm)
+    (let ((ps (render-expr pattern 0))
+          (bs (render-expr body 0)))
+      (when (and ps bs) (format nil "~a => ~a" ps bs)))))
+
+(defun value-promotable-brace-p (x)
+  "Statement forms the parser would promote to a block value when they sit
+last before `}` with no `;`: exactly these need their `;` printed back."
+  (and (node-p x)
+       (or (member (node-head x) +stmt-stopper-heads+)
+           (and (eq (node-head x) :fn) (null (first (node-args x)))))))
+
 (defun render-block-inline (block)
   (let* ((args (node-args block))
          (stmts (butlast args))
          (value (a:lastcar args))
          (parts '()))
-    ;; Canonical layout: only zero-or-one-item blocks may sit inline —
-    ;; `{}`, `{ expr }`, `{ stmt; }`. Anything larger breaks.
-    (when (> (+ (length stmts) (if (null value) 0 1)) 1)
+    ;; Canonical layout: only zero-or-one-item blocks sit inline —
+    ;; `{}`, `{ expr }`, `{ stmt; }` — unless forced.
+    (when (and (not *force-inline*)
+               (> (+ (length stmts) (if (null value) 0 1)) 1))
       (return-from render-block-inline nil))
-    (dolist (s stmts)
-      (a:if-let ((line (render-stmt-inline s)))
-        (push line parts)
-        (return-from render-block-inline nil)))
+    (loop for (s . more) on stmts
+          do (a:if-let ((line (render-stmt-inline s)))
+               (push (if (and (null more) (null value)
+                              (value-promotable-brace-p s))
+                         ;; the `;` that pins a trailing brace-form as a
+                         ;; statement (SPEC §5.4) must survive printing
+                         (concatenate 'string line ";")
+                         line)
+                     parts)
+               (return-from render-block-inline nil)))
     (unless (null value)
-      (a:if-let ((line (render-expr value 0)))
+      (a:if-let ((line (render-value-expr value)))
         (push line parts)
         (return-from render-block-inline nil)))
     (if (null parts)
         "{}"
         (format nil "{ ~{~a~^ ~} }" (nreverse parts)))))
+
+(defun render-value-expr (value)
+  "A block's trailing value as text — parenthesized when its leading token
+would otherwise start a statement-stopper."
+  (a:when-let ((s (render-expr value 0)))
+    (if (and (expr-leading-stopper-p value)
+             (not (member (node-head value) +stmt-stopper-heads+)))
+        (concatenate 'string "(" s ")")
+        s)))
 
 ;;; --- statement rendering (inline) ---------------------------------------------
 
@@ -201,7 +315,6 @@ with `{` (the parser gives braces there to the body)."
   "One statement as a single line (with its `;` where the grammar wants one),
 or NIL when it must break (named fn defs are always multiline, canonically)."
   (if (not (node-p node))
-      ;; a bare scalar as an expression statement (rare, synthetic)
       (concatenate 'string (literal-string node) ";")
       (case (node-head node)
         ((:let :var)
@@ -229,9 +342,13 @@ or NIL when it must break (named fn defs are always multiline, canonically)."
          (if (first (node-args node))
              nil                        ; named fn defs always break
              (render-expr node 0)))     ; lambda as expression statement
-        ((:if :while :block) (render-expr node 0))
+        ((:if :while :block :for_in :switch) (render-expr node 0))
         (t (a:when-let ((s (render-expr node 0)))
-             (concatenate 'string s ";"))))))
+             (concatenate 'string
+                          (if (expr-leading-stopper-p node)
+                              (concatenate 'string "(" s ")")
+                              s)
+                          ";"))))))
 
 ;;; --- multiline emission ----------------------------------------------------------
 
@@ -243,19 +360,23 @@ or NIL when it must break (named fn defs are always multiline, canonically)."
   (write-string text stream)
   (terpri stream))
 
-(defun emit-stmt (stream node indent)
-  (let ((line (render-stmt-inline node)))
-    (if (and line (<= (+ indent (length line)) *print-width*))
-        (out-line stream indent line)
-        (emit-stmt-broken stream node indent))))
+(defun emit-stmt (stream node indent &optional (suffix ""))
+  (if (not (node-p node))
+      ;; a bare scalar statement can never break — accept a long line
+      (out-line stream indent
+                (concatenate 'string (literal-string node) ";" suffix))
+      (let ((line (render-stmt-inline node)))
+        (if (and line (<= (+ indent (length line) (length suffix)) *print-width*))
+            (out-line stream indent (concatenate 'string line suffix))
+            (emit-stmt-broken stream node indent suffix)))))
 
-(defun emit-stmt-broken (stream node indent)
-  (assert (node-p node) (node) "cannot break a scalar statement")
+(defun emit-stmt-broken (stream node indent suffix)
   (case (node-head node)
-    (:fn (emit-fn stream node indent "" ""))
-    (:if (emit-if-chain stream node indent "" ""))
-    (:while (emit-value-broken stream "" node "" indent))
-    (:block (emit-value-broken stream "" node "" indent))
+    (:fn (emit-fn stream node indent "" suffix))
+    (:if (emit-if-chain stream node indent "" suffix))
+    ((:while :for_in) (emit-value-broken stream "" node suffix indent))
+    (:block (emit-value-broken stream "" node suffix indent))
+    (:switch (emit-switch stream node indent "" suffix))
     ((:let :var)
      (destructuring-bind (name type value) (node-args node)
        (emit-value-broken stream
@@ -263,49 +384,75 @@ or NIL when it must break (named fn defs are always multiline, canonically)."
                                   (node-head node)
                                   (symbol-name (ident-name name))
                                   (and type (render-expr type 0)))
-                          value ";" indent)))
+                          value (concatenate 'string ";" suffix) indent)))
     (:assign
      (destructuring-bind (target value) (node-args node)
        (emit-value-broken stream (format nil "~a = " (render-expr target 0))
-                          value ";" indent)))
+                          value (concatenate 'string ";" suffix) indent)))
     (:op_assign
      (destructuring-bind (op target value) (node-args node)
        (emit-value-broken stream
                           (format nil "~a ~a " (render-expr target 0)
                                   (compound-op-text op))
-                          value ";" indent)))
+                          value (concatenate 'string ";" suffix) indent)))
     (:return
-     (emit-value-broken stream "return " (first (node-args node)) ";" indent))
+     (emit-value-broken stream "return " (first (node-args node))
+                        (concatenate 'string ";" suffix) indent))
     (t
-     (emit-value-broken stream "" node
-                        (if (member (node-head node) +brace-stmt-heads+) "" ";")
-                        indent))))
+     ;; expression statement
+     (if (expr-leading-stopper-p node)
+         (emit-value-broken stream "(" node
+                            (concatenate 'string ");" suffix) indent)
+         (emit-value-broken stream "" node
+                            (concatenate 'string
+                                         (if (member (node-head node)
+                                                     +brace-stmt-heads+)
+                                             "" ";")
+                                         suffix)
+                            indent)))))
 
 (defun emit-value-broken (stream prefix value suffix indent)
   "Emit PREFIX + VALUE + SUFFIX, breaking VALUE across lines when it has a
-multiline form; otherwise accept one long line (binary chains do not wrap)."
+multiline form; otherwise one (possibly long) inline line — never a crash."
   (if (not (node-p value))
       (out-line stream indent
                 (concatenate 'string prefix (literal-string value) suffix))
       (case (node-head value)
         (:if (emit-if-chain stream value indent prefix suffix))
         (:fn (emit-fn stream value indent prefix suffix))
-        (:while
-         (destructuring-bind (c body) (node-args value)
-           (out-line stream indent
-                     (format nil "~awhile ~a {" prefix (render-cond c)))
-           (emit-block-body stream body (+ indent +indent-step+))
-           (out-line stream indent (concatenate 'string "}" suffix))))
+        ((:while :for_in)
+         (out-line stream indent
+                   (format nil "~a~a {" prefix (render-loop-header value)))
+         (emit-block-body stream (a:lastcar (node-args value))
+                          (+ indent +indent-step+))
+         (out-line stream indent (concatenate 'string "}" suffix)))
         (:block
          (out-line stream indent (concatenate 'string prefix "{"))
          (emit-block-body stream value (+ indent +indent-step+))
          (out-line stream indent (concatenate 'string "}" suffix)))
-        (t
-         (let ((inline (render-expr value 0)))
-           (assert inline (value)
-                   "no multiline form for head ~a" (node-head value))
-           (out-line stream indent
-                     (concatenate 'string prefix inline suffix)))))))
+        (:switch (emit-switch stream value indent prefix suffix))
+        (:pipe (if (pipe-chain-p value)
+                   (emit-pipe-chain stream value indent prefix suffix)
+                   (emit-plain-value stream value indent prefix suffix)))
+        (:record_lit
+         (if (node-args value)
+             (emit-record-broken stream value indent prefix suffix)
+             (out-line stream indent
+                       (concatenate 'string prefix ".{}" suffix))))
+        (:list_lit
+         (if (node-args value)
+             (emit-list-broken stream value indent prefix suffix)
+             (out-line stream indent
+                       (concatenate 'string prefix "[]" suffix))))
+        (t (emit-plain-value stream value indent prefix suffix)))))
+
+(defun emit-plain-value (stream value indent prefix suffix)
+  "No multiline form exists: force an inline rendering, however long."
+  (let ((inline (or (render-expr value 0)
+                    (let ((*force-inline* t)) (render-expr value 0)))))
+    (assert inline (value)
+            "no rendering at all for head ~a" (node-head value))
+    (out-line stream indent (concatenate 'string prefix inline suffix))))
 
 (defun emit-if-chain (stream node indent prefix suffix)
   "if cond { ... } else if ... { ... } else { ... } — the canonical chain."
@@ -348,6 +495,69 @@ multiline form; otherwise accept one long line (binary chains do not wrap)."
     (emit-block-body stream body (+ indent +indent-step+))
     (out-line stream indent (concatenate 'string "}" suffix))))
 
+(defun emit-switch (stream node indent prefix suffix)
+  "Canonical switch: one arm per line; expression arms carry trailing
+commas, }-terminated arms none (§5.6 comma rule, §5.7 layout)."
+  (out-line stream indent
+            (format nil "~aswitch ~a {" prefix
+                    (render-cond (first (node-args node)))))
+  (dolist (arm (rest (node-args node)))
+    (emit-switch-arm stream arm (+ indent +indent-step+)))
+  (out-line stream indent (concatenate 'string "}" suffix)))
+
+(defun emit-switch-arm (stream arm indent)
+  (destructuring-bind (pattern body) (node-args arm)
+    (let* ((ps (or (render-expr pattern 0)
+                   (let ((*force-inline* t)) (render-expr pattern 0))))
+           (braced (and (node-p body)
+                        (member (node-head body) +brace-stmt-heads+)))
+           (line (a:when-let ((bs (render-expr body 0)))
+                   (format nil "~a => ~a~:[,~;~]" ps bs braced))))
+      (if (and line (<= (+ indent (length line)) *print-width*))
+          (out-line stream indent line)
+          (emit-value-broken stream (format nil "~a => " ps) body
+                             (if braced "" ",") indent)))))
+
+(defun emit-pipe-chain (stream node indent prefix suffix)
+  "The canonical multi-stage pipeline: head expression on the first line,
+one `|> stage` per line, indented one step (§10.1 layout)."
+  (let ((stages '())
+        (head node))
+    (loop while (and (node-p head) (eq (node-head head) :pipe))
+          do (push (second (node-args head)) stages)
+             (setf head (first (node-args head))))
+    (flet ((stage-text (s)
+             (or (render-expr s 3)
+                 (let ((*force-inline* t)) (render-expr s 3)))))
+      (out-line stream indent
+                (concatenate 'string prefix (stage-text head)))
+      (loop for (s . more) on stages
+            do (out-line stream (+ indent +indent-step+)
+                         (concatenate 'string "|> " (stage-text s)
+                                      (if more "" suffix)))))))
+
+(defun emit-record-broken (stream node indent prefix suffix)
+  (out-line stream indent (concatenate 'string prefix ".{"))
+  (dolist (fi (node-args node))
+    (destructuring-bind (name value) (node-args fi)
+      (let ((line (a:when-let ((v (render-expr value 0)))
+                    (format nil ".~a = ~a," (symbol-name name) v))))
+        (if (and line (<= (+ indent +indent-step+ (length line)) *print-width*))
+            (out-line stream (+ indent +indent-step+) line)
+            (emit-value-broken stream (format nil ".~a = " (symbol-name name))
+                               value "," (+ indent +indent-step+))))))
+  (out-line stream indent (concatenate 'string "}" suffix)))
+
+(defun emit-list-broken (stream node indent prefix suffix)
+  (out-line stream indent (concatenate 'string prefix "["))
+  (dolist (e (node-args node))
+    (let ((line (a:when-let ((s (render-expr e 0)))
+                  (concatenate 'string s ","))))
+      (if (and line (<= (+ indent +indent-step+ (length line)) *print-width*))
+          (out-line stream (+ indent +indent-step+) line)
+          (emit-value-broken stream "" e "," (+ indent +indent-step+)))))
+  (out-line stream indent (concatenate 'string "]" suffix)))
+
 ;;; --- blocks, blank-line preservation ----------------------------------------------
 
 (defun tree-max-line (x)
@@ -378,11 +588,16 @@ multiline form; otherwise accept one long line (binary chains do not wrap)."
          (stmts (butlast args))
          (value (a:lastcar args))
          (prev nil))
-    (dolist (s stmts)
-      (when (and prev (blank-line-between-p prev s))
-        (terpri stream))
-      (emit-stmt stream s indent)
-      (setf prev s))
+    (loop for (s . more) on stmts
+          do (when (and prev (blank-line-between-p prev s))
+               (terpri stream))
+             (emit-stmt stream s indent
+                        ;; print back the `;` that keeps a trailing brace-form
+                        ;; a statement rather than the block's value (§5.4)
+                        (if (and (null more) (null value)
+                                 (value-promotable-brace-p s))
+                            ";" ""))
+             (setf prev s))
     (unless (null value)
       (when (and prev (blank-line-between-p prev value))
         (terpri stream))
@@ -391,11 +606,15 @@ multiline form; otherwise accept one long line (binary chains do not wrap)."
 (defun emit-value-stmt (stream value indent)
   "A block's trailing value: an expression line with no `;`."
   (let ((line (and (or (not (node-p value))
-                       (not (member (node-head value) '(:let :var :assign :op_assign :return))))
-                   (render-expr value 0))))
+                       (not (member (node-head value) +stmt-only-heads+)))
+                   (render-value-expr value))))
     (if (and line (<= (+ indent (length line)) *print-width*))
         (out-line stream indent line)
-        (emit-value-broken stream "" value "" indent))))
+        (if (and (node-p value)
+                 (expr-leading-stopper-p value)
+                 (not (member (node-head value) +stmt-stopper-heads+)))
+            (emit-value-broken stream "(" value ")" indent)
+            (emit-value-broken stream "" value "" indent)))))
 
 ;;; --- modules -------------------------------------------------------------------
 
@@ -418,11 +637,24 @@ multiline form; otherwise accept one long line (binary chains do not wrap)."
         (emit-stmt s stmt 0)
         (setf prev stmt)))))
 
+(defun print-node (x)
+  "Render one node (or scalar) as canonical surface syntax (SPEC §5.7 print)."
+  (string-right-trim
+   '(#\Newline)
+   (with-output-to-string (s)
+     (if (and (node-p x)
+              (or (member (node-head x) +stmt-only-heads+)
+                  (named-def-p x)))
+         (emit-stmt s x 0)
+         (let ((line (render-expr x 0)))
+           (if (and line (<= (length line) *print-width*))
+               (write-string line s)
+               (emit-value-broken s "" x "" 0)))))))
+
 ;;; --- show: runtime values as Sputter literals (SPEC §5.7) ---------------------
 
 (defun show-value (v)
-  "Runtime values rendered as Sputter literals; the REPL echoes through this.
-Records and tagged values complete the picture in M3."
+  "Runtime values rendered as Sputter literals; the REPL echoes through this."
   (cond ((eq v t) "true")
         ((null v) "nil")
         ((sput-false-p v) "false")
@@ -431,6 +663,18 @@ Records and tagged values complete the picture in M3."
         ((stringp v) (escape-string-literal v))
         ((keywordp v) (concatenate 'string "." (symbol-name v)))
         ((consp v) (format nil "[~{~a~^, ~}]" (mapcar #'show-value v)))
+        ((tagged-p v)
+         (format nil ".~a(~{~a~^, ~})" (symbol-name (tagged-tag v))
+                 (map 'list #'show-value (tagged-vals v))))
+        ((record-p v)
+         (let ((keys (record-keys v)))
+           (if keys
+               (format nil ".{ ~{~a~^, ~} }"
+                       (mapcar (lambda (k)
+                                 (format nil ".~a = ~a" (symbol-name k)
+                                         (show-value (record-ref v k))))
+                               keys))
+               ".{}")))
         ((functionp v) (show-function v))
         ((node-p v)
          (format nil "<node ~(~a~)~@[ ~a~]>"
@@ -440,16 +684,3 @@ Records and tagged values complete the picture in M3."
 (defun show-function (f)
   (multiple-value-bind (name arity) (host-function-info f)
     (format nil "<fn ~a~@[/~d~]>" (or name "anon") arity)))
-
-(defun print-node (x)
-  "Render one node (or scalar) as canonical surface syntax (SPEC §5.7 print)."
-  (string-right-trim '(#\Newline)
-                     (with-output-to-string (s)
-                       (if (and (node-p x)
-                                (member (node-head x)
-                                        '(:let :var :assign :op_assign :return)))
-                           (emit-stmt s x 0)
-                           (let ((line (render-expr x 0)))
-                             (if (and line (<= (length line) *print-width*))
-                                 (write-string line s)
-                                 (emit-value-broken s "" x "" 0)))))))

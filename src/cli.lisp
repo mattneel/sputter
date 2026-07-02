@@ -60,6 +60,13 @@ Returns true when handled; anything unrecognized is an implementation bug."
         (format *error-output*
                 "error: internal error in the sput toolchain (this is a bug — set SPUTTER_HOST_BACKTRACE=1 for details)~%"))
       (maybe-host-backtrace c)
+      1)
+    ;; storage-condition is NOT an error subtype: without this clause a
+    ;; control-stack blowup would reach the user as a raw SBCL dump (I2)
+    (storage-condition (c)
+      (declare (ignorable c))
+      (format *error-output*
+              "error: the host ran out of stack or memory processing this input~%")
       1)))
 
 (defmacro with-error-boundary (() &body body)
@@ -70,9 +77,12 @@ Returns true when handled; anything unrecognized is an implementation bug."
 (defun flag-p (s) (a:starts-with-subseq "--" s))
 
 (defun read-source-file (path)
-  (unless (probe-file path)
+  (unless (uiop:file-exists-p path)     ; directories are not source files
     (error 'sputter-error :message (format nil "no such file: ~a" path)))
-  (uiop:read-file-string path))
+  (handler-case (uiop:read-file-string path :external-format :utf-8)
+    (error ()
+      (error 'sputter-error
+             :message (format nil "cannot read ~a as UTF-8 text" path)))))
 
 (defun check-flags (flags allowed command)
   (dolist (f flags)
@@ -195,7 +205,11 @@ Returns the value to echo."
             (unless (render-host-condition c *error-output*)
               (format *error-output*
                       "error: internal error in the sput toolchain (this is a bug)~%"))
-            (maybe-host-backtrace c)))))))
+            (maybe-host-backtrace c))
+          (storage-condition (c)
+            (declare (ignorable c))
+            (format *error-output*
+                    "error: the host ran out of stack or memory processing this input~%")))))))
 
 ;;; --- dispatch ----------------------------------------------------------------------
 

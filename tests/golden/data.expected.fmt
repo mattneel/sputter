@@ -1,0 +1,26 @@
+let account = .{ .name = "amy", .roles = [.admin, .ops] };
+println(show(account));
+println(show(account.roles[1]));
+println(len(account.roles));
+
+let xs = [1, ...[2, 3], 4];
+println(show(xs));
+println(show([0] ++ xs));
+
+var total = 0;
+for x in xs { total += x; }
+println(total);
+
+var q = 0;
+q = total * 2;
+println(q);
+
+println(show(switch .ok(7) { .ok(v) => v + 1, .err(e) => e, }));
+
+println(show(switch [1, 2, 3] { [] => .empty, [first, ...rest] => .pair(first, rest), }));
+
+println(show(switch .{ .role = .admin, .name = "amy" } { .{ .role = .admin, .name = nm } => nm, _ => "nobody", }));
+
+println(show(1 == 1.0));
+println(show(.{ .a = 1, .b = 2 } == .{ .b = 2, .a = 1 }));
+println(show([1, 2] |> map(fn(x) { x * 10 }) |> sum()));

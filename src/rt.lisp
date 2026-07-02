@@ -149,14 +149,67 @@ CL NIL, which is Sputter's nil, not false)."
 (defun sput-not (a)
   (if (truthy a) +sput-false+ t))
 
+;;; --- tagged values and records (SPEC §5.5) -------------------------------------
+
+(defstruct (tagged (:constructor %make-tagged (tag vals)))
+  (tag nil :type keyword)
+  (vals #() :type simple-vector))
+
+(defmethod print-object ((x tagged) stream)
+  ;; Host-level repr only; the user-facing renderer is `show` (I2).
+  (print-unreadable-object (x stream)
+    (format stream "sput-tagged ~a/~d" (tagged-tag x) (length (tagged-vals x)))))
+
+(defun make-tagged (tag &rest vals)
+  (%make-tagged tag (coerce vals 'simple-vector)))
+
+;; Records are hash tables with keyword keys (SPEC §5.5), immutable by fiat.
+;; Insertion order is remembered under a hidden uninterned-symbol key so
+;; `show`/`dump` render fields in source order (keywords never collide with
+;; an uninterned symbol, and every rt accessor filters it).
+(defvar +record-order+ (make-symbol "RECORD-ORDER"))
+
+(defun make-record (&rest kvs)
+  (let ((r (make-hash-table :test 'eq))
+        (order '()))
+    (loop for (k v) on kvs by #'cddr
+          do (check-type k keyword)
+             (unless (nth-value 1 (gethash k r))
+               (push k order))
+             (setf (gethash k r) v))
+    (setf (gethash +record-order+ r) (nreverse order))
+    r))
+
+(defun record-p (x) (hash-table-p x))
+
+(defun record-keys (r)
+  (gethash +record-order+ r))
+
+(defun record-ref (r k)
+  (gethash k r))
+
+(defun record-has-p (r k)
+  (and (keywordp k) (nth-value 1 (gethash k r))))
+
 (defun sput-equal (a b)
   "Structural `==` (SPEC §5.5): numbers by =, strings by string=, atoms and
-booleans by identity, lists/nodes recursively (records/tagged arrive in M3).
-Returns a CL generalized boolean; sput-eq wraps it for the surface."
+booleans by identity, lists/records/tagged/nodes recursively (node meta is
+provenance, not identity). Returns a CL generalized boolean; sput-eq wraps."
   (cond ((and (numberp a) (numberp b)) (= a b))
         ((and (stringp a) (stringp b)) (string= a b))
         ((and (consp a) (consp b))
          (and (sput-equal (car a) (car b)) (sput-equal (cdr a) (cdr b))))
+        ((and (tagged-p a) (tagged-p b))
+         (and (eq (tagged-tag a) (tagged-tag b))
+              (= (length (tagged-vals a)) (length (tagged-vals b)))
+              (every #'sput-equal (tagged-vals a) (tagged-vals b))))
+        ((and (record-p a) (record-p b))
+         (let ((ka (record-keys a)) (kb (record-keys b)))
+           (and (= (length ka) (length kb))
+                (every (lambda (k)
+                         (and (record-has-p b k)
+                              (sput-equal (record-ref a k) (record-ref b k))))
+                       ka))))
         ((and (node-p a) (node-p b))
          (and (eq (node-head a) (node-head b))
               (= (length (node-args a)) (length (node-args b)))
@@ -176,10 +229,14 @@ Returns a CL generalized boolean; sput-eq wraps it for the surface."
 ;;; --- data access (minimal in M2; records/tagged complete it in M3) -----------
 
 (defun sput-field (obj name)
-  (cond ((hash-table-p obj)
+  (cond ((record-p obj)
          (multiple-value-bind (v found) (gethash name obj)
            (if found v (rt-panic "no field .~a on ~a" (symbol-name name)
                                  (show-value obj)))))
+        ((tagged-p obj)
+         (if (eq name :|tag|)
+             (tagged-tag obj)
+             (rt-panic "tagged values expose .tag, not .~a" (symbol-name name))))
         ((node-p obj)
          (case name
            (:|head| (node-head obj))
@@ -188,6 +245,58 @@ Returns a CL generalized boolean; sput-eq wraps it for the surface."
                         (symbol-name name)))))
         (t (rt-panic "~a has no fields (wanted .~a)"
                      (show-value obj) (symbol-name name)))))
+
+;;; --- list support (spread, for..in, match) -------------------------------------
+
+(defun sput-list-append (&rest segments)
+  "Spread desugar: every segment must be a list."
+  (dolist (s segments)
+    (unless (listp s)
+      (rt-panic "cannot spread ~a into a list" (show-value s))))
+  (apply #'append segments))
+
+(defun sput-check-list (x)
+  (unless (listp x)
+    (rt-panic "for..in iterates lists, got ~a" (show-value x)))
+  x)
+
+(defun rt-no-match (v &optional file line col)
+  (sput-panic (format nil "no switch arm matched ~a" (show-value v))
+              :file file :line line :col col))
+
+;;; --- list/collection builtins (prelude-registered) -------------------------------
+
+(defun sput-map (xs f)
+  (sput-check-listy "map" xs)
+  (mapcar (lambda (x) (funcall f x)) xs))
+
+(defun sput-filter (xs f)
+  (sput-check-listy "filter" xs)
+  (remove-if-not (lambda (x) (truthy (funcall f x))) xs))
+
+(defun sput-reduce (xs init f)
+  (sput-check-listy "reduce" xs)
+  (let ((acc init))
+    (dolist (x xs acc)
+      (setf acc (funcall f acc x)))))
+
+(defun sput-sum (xs)
+  (sput-check-listy "sum" xs)
+  (let ((total 0))
+    (dolist (x xs total)
+      (setf total (sput-add total x)))))
+
+(defun sput-len (x)
+  (cond ((listp x) (length x))
+        ((stringp x) (length x))
+        ((record-p x) (length (record-keys x)))
+        ((tagged-p x) (length (tagged-vals x)))
+        (t (rt-panic "len wants a list, string, record, or tagged value, got ~a"
+                     (show-value x)))))
+
+(defun sput-check-listy (who xs)
+  (unless (listp xs)
+    (rt-panic "~a wants a list, got ~a" who (show-value xs))))
 
 (defun sput-index (obj i)
   (cond ((and (listp obj) (integerp i))

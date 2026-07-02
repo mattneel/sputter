@@ -110,12 +110,78 @@ when registered, else the mangled user symbol (late-bound)."
       (:p.index
        (destructuring-bind (obj idx) args
          `(sput-index ,(emit-plasma obj) ,(emit-plasma idx))))
-      ((:p.match :p.list :p.record :p.tagged)
-       (assert nil (x) "~a emission arrives with M3" (node-head x)))
+      (:p.list `(list ,@(mapcar #'emit-plasma args)))
+      (:p.record
+       `(make-record ,@(loop for (k v) on args by #'cddr
+                             append (list `',k (emit-plasma v)))))
+      (:p.tagged
+       `(make-tagged ',(first args) ,@(mapcar #'emit-plasma (rest args))))
+      (:p.match (emit-match x))
       (:p.let
        ;; p.let is structural inside p.block (handled by emit-stmt-chain)
        ;; or a global def at top level (handled by emit-top-form)
        (assert nil (x) "p.let reached expression emission")))))
+
+;;; --- p.match → trivia (SPEC §5.6, §7: the ride is an emitter detail) -----------
+
+(defun emit-match (pmatch)
+  (let ((g (gensym "SCRUTINEE"))
+        (m (node-meta pmatch)))
+    `(let ((,g ,(emit-plasma (first (node-args pmatch)))))
+       (trivia:match ,g
+         ,@(mapcar (lambda (arm)
+                     (destructuring-bind (pattern body) (node-args arm)
+                       (list (emit-match-pattern pattern)
+                             (emit-plasma body))))
+                   (rest (node-args pmatch)))
+         (_ (rt-no-match ,g ,(meta-file m) ,(meta-line m) ,(meta-col m)))))))
+
+(defun emit-match-pattern (pat)
+  "Term pattern -> trivia pattern. Semantics per SPEC §5.6: literals and
+atoms by ==, bare identifiers bind, .tag(...) arity-checked, records match
+with at-least those fields, lists exactly (or with a ...tail)."
+  (cond
+    ((not (node-p pat))
+     (let ((g (gensym "LIT")))
+       `(trivia:guard ,g (sput-equal ,g ',pat))))
+    (t
+     (ecase (node-head pat)
+       (:ident
+        (let ((name (ident-name pat)))
+          (if (string= (symbol-name name) "_")
+              '_
+              (mangle name))))
+       (:tagged_lit
+        (destructuring-bind (tag . subs) (node-args pat)
+          (let ((g (gensym "TAGGED")))
+            `(trivia:guard1 ,g (and (tagged-p ,g)
+                                    (eq (tagged-tag ,g) ',tag)
+                                    (= (length (tagged-vals ,g)) ,(length subs)))
+                            ,@(loop for s in subs
+                                    for i from 0
+                                    append (list `(svref (tagged-vals ,g) ,i)
+                                                 (emit-match-pattern s)))))))
+       (:record_lit
+        (let ((g (gensym "RECORD"))
+              (fields (node-args pat)))
+          `(trivia:guard1 ,g (and (record-p ,g)
+                                  ,@(mapcar (lambda (fi)
+                                              `(record-has-p ,g ',(first (node-args fi))))
+                                            fields))
+                          ,@(loop for fi in fields
+                                  append (list `(record-ref ,g ',(first (node-args fi)))
+                                               (emit-match-pattern
+                                                (second (node-args fi))))))))
+       (:list_lit
+        (let* ((elems (node-args pat))
+               (tail (and elems
+                          (node-p (a:lastcar elems))
+                          (eq (node-head (a:lastcar elems)) :spread)
+                          (a:lastcar elems))))
+          (if tail
+              `(list* ,@(mapcar #'emit-match-pattern (butlast elems))
+                      ,(emit-match-pattern (first (node-args tail))))
+              `(list ,@(mapcar #'emit-match-pattern elems)))))))))
 
 (defun emit-stmt-chain (stmts value)
   "A p.block emits as nested LET* layers around a PROGN spine."

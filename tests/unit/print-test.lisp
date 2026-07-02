@@ -65,6 +65,58 @@
   (let ((out (s:print-module (s:parse-module "let x = { a(); b() };"))))
     (ok (search (format nil "{~%") out) "two-item blocks break")))
 
+(defun refmt (src)
+  (s:print-module (s:parse-module src)))
+
+(deftest review-regressions
+  ;; the pinning `;` survives printing (SPEC §5.4)
+  (ok (equal (refmt "fn f(c) { if c { 1 } else { 2 }; }")
+             (format nil "fn f(c) {~%    if c { 1 } else { 2 };~%}~%"))
+      "a trailing `;` on a brace-form statement is printed back")
+  (ok (equal (refmt "fn f(c) { if c { 1 } else { 2 } }")
+             (format nil "fn f(c) {~%    if c { 1 } else { 2 }~%}~%"))
+      "…and stays absent when the form is the value")
+  ;; multi-item blocks in operand position render (no crash), reparse equal
+  (let* ((src "let y = 1 + { p(); q() };")
+         (out (refmt src)))
+    (ok (equal out (format nil "let y = 1 + { p(); q() };~%"))
+        "operand blocks force-inline rather than crash")
+    (ok (every #'s:node-equal (s:parse-module src) (s:parse-module out))
+        "…and round-trip"))
+  ;; block-headed conditions print parenthesized
+  (let ((out (refmt "let z = if ({ 1 }) { 2 } else { 3 };")))
+    (ok (search "if ({ 1 })" out) "cond blocks keep their parens")
+    (ok (every #'s:node-equal (s:parse-module out) (s:parse-module out))
+        "…and reparse"))
+  ;; statement-position: expressions leading with a stopper form print
+  ;; parenthesized (in expression position, print-node needs no parens)
+  (let* ((stmt (n :call (n :if (i "c") (n :block (i "f")) (n :block (i "g")))
+                  (i "x")))
+         (out (s:print-module (list stmt))))
+    (ok (a:starts-with-subseq "(" out)
+        "an expression statement cannot lead with a bare `if`")
+    (ok (s:node-equal (first (s:parse-module out)) stmt) "…and reparses equal"))
+  ;; negative scalars round-trip now that the parser folds them
+  (ok (equal (s:print-node -5) "-5"))
+  (ok (eql (s:parse-expression (s:print-node -1.5d0)) -1.5d0)))
+
+(deftest m3-layout
+  ;; switch always breaks: one arm per line, expr arms take trailing commas
+  (ok (equal (refmt "let g = switch x { 1 => \"one\", else => \"many\" };")
+             (format nil "let g = switch x {~%    1 => \"one\",~%    _ => \"many\",~%};~%"))
+      "canonical switch layout (else canonicalizes to _)")
+  ;; single pipes stay inline; chains of two or more break
+  (ok (equal (refmt "let a = x |> f;") (format nil "let a = x |> f;~%")))
+  (ok (equal (refmt "let a = x |> f |> g(1);")
+             (format nil "let a = x~%    |> f~%    |> g(1);~%"))
+      "pipe chains break one stage per line")
+  ;; records break one field per line when too wide
+  (let ((out (refmt (format nil "let r = .{ .alpha = ~s, .beta = ~s };"
+                            (make-string 60 :initial-element #\a)
+                            (make-string 60 :initial-element #\b)))))
+    (ok (search (format nil ".{~%") out) "wide records break")
+    (ok (search (format nil ",~%}") out) "…with trailing commas")))
+
 (deftest parse-print-property
   ;; Over the golden corpus: print is a fixpoint and preserves structure.
   (let ((files (remove-if (lambda (f)

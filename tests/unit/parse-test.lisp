@@ -136,9 +136,32 @@
       "expression-position if does continue into operators"))
 
 (deftest future-syntax-is-a-clean-error
-  (parse-fails "let x = [1, 2];")
-  (parse-fails "let x = .ok;")
-  (parse-fails "let x = .{ .a = 1 };")
-  (parse-fails "let x = switch y { };")
   (parse-fails "let x = quote { 1 };")
-  (parse-fails "for x in xs { }"))
+  (parse-fails "macro m { }"))
+
+(deftest review-regressions
+  ;; the Rust `;` rule on }-terminated statements (M1 review, SPEC §5.4)
+  (stmt= "{ if c { 1 } else { 2 }; }"
+         (n :block (n :if (i "c") (n :block 1) (n :block 2)) nil)
+         "a trailing `;` pins a brace-form as a statement — value nil")
+  (stmt= "{ if c { 1 } else { 2 } }"
+         (n :block (n :if (i "c") (n :block 1) (n :block 2)))
+         "without `;` it is the block's value")
+  (stmt= "{ { 1 }; }" (n :block (n :block 1) nil))
+  ;; nesting depth guard (raw stack exhaustion must never escape, I2)
+  (ok (signals
+       (s:parse-module
+        (format nil "let x = ~a1~a;"
+                (make-string 600 :initial-element #\()
+                (make-string 600 :initial-element #\))))
+       's:sputter-parse-error)
+      "deep nesting is a spanned Sputter error")
+  ;; the no-brace-cond rule must not leak into nested bodies
+  (ok (s:parse-module "while c { { 1 } }")
+      "blocks inside a loop body parse despite the paren-free condition")
+  (ok (s:parse-module "if c { let f = fn() { { 1 } }; }")
+      "…even nested through lambdas")
+  ;; negated literals fold to negative scalars (round-trip support)
+  (ok (eql (pe "-5") -5))
+  (ok (eql (pe "-1.5") -1.5d0))
+  (ok (s:node-equal (pe "-x") (n :neg (i "x"))) "non-literals keep .neg"))

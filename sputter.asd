@@ -30,6 +30,7 @@
                              (:file "lex-test")
                              (:file "parse-test")
                              (:file "print-test")
-                             (:file "run-test")))
+                             (:file "run-test")
+                             (:file "data-test")))
                (:file "golden"))
   :perform (asdf:test-op (o c) (uiop:symbol-call :rove :run c)))

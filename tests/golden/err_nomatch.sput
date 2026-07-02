@@ -1,0 +1,4 @@
+let outcome = switch .err(.timeout) {
+    .ok(v) => v,
+    .err(.not_found) => nil,
+};

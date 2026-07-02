@@ -117,6 +117,8 @@ or :expr-open (an expression with no `;` — legal only as a block's value)."
     ((or (p-at-kw p :let) (p-at-kw p :var)) (parse-binding p))
     ((p-at-kw p :return) (parse-return p))
     ((p-at-kw p :while) (values (parse-while p) (braced-statement-end p)))
+    ((p-at-kw p :for) (values (parse-for p) (braced-statement-end p)))
+    ((p-at-kw p :switch) (values (parse-switch p) (braced-statement-end p)))
     ((p-at-kw p :if) (values (parse-if p) (braced-statement-end p)))
     ((and (p-at-kw p :fn) (p-at p :ident 1))
      (values (parse-fn p :named t) (braced-statement-end p)))
@@ -124,9 +126,12 @@ or :expr-open (an expression with no `;` — legal only as a block's value)."
     (t (parse-expr-statement p))))
 
 (defun braced-statement-end (p)
-  "A }-terminated statement takes no `;`; consume a stray one leniently."
-  (when (p-at p :semi) (p-next p))
-  :braced)
+  "A }-terminated statement takes no `;` — but a `;` written after one has
+semantic weight (SPEC §5.4): it pins the form as a *statement*, so it can
+never be promoted to a block's trailing value."
+  (if (p-at p :semi)
+      (progn (p-next p) :braced-semi)
+      :braced))
 
 (defun parse-binding (p)
   (let* ((intro (p-next p))              ; let | var
@@ -204,6 +209,9 @@ or :expr-open (an expression with no `;` — legal only as a block's value)."
   "Parse `{ ... }`. Args are [stmt* value]; the value slot is the trailing
 expression when the block ends without `;`, else a synthesized scalar nil."
   (let ((open (p-expect p :lbrace "`{`"))
+        ;; a block interior is a fresh statement context: a paren-free
+        ;; condition's no-brace rule must not leak into nested bodies
+        (*no-brace-expr* nil)
         (stmts '())
         (value nil))
     (loop
@@ -212,7 +220,8 @@ expression when the block ends without `;`, else a synthesized scalar nil."
         (return))
       (multiple-value-bind (node kind) (parse-statement p)
         (ecase kind
-          ((:decl :expr-semi) (push node stmts))
+          ;; :braced-semi: the `;` pinned it as a statement (SPEC §5.4)
+          ((:decl :expr-semi :braced-semi) (push node stmts))
           (:expr-open
            ;; guaranteed by parse-expr-statement: next token is `}`
            (setf value node))
@@ -254,6 +263,148 @@ assignments, and named fn defs are not values."
          (cond-expr (let ((*no-brace-expr* t)) (parse-expr p)))
          (body (parse-block p)))
     (make-node :while (list cond-expr body) :meta (tok-meta p tok))))
+
+(defun parse-for (p)
+  "`for x in xs { ... }` — iterates a list, value nil (SPEC §5.4)."
+  (let* ((tok (p-next p))
+         (binder-tok (p-expect p :ident "a binder name"))
+         (binder (make-ident (token-value binder-tok)
+                             :meta (tok-meta p binder-tok))))
+    (unless (p-at-kw p :in)
+      (parse-error-at p (p-peek p) "expected `in`, got ~a"
+                      (token-describe (p-peek p))))
+    (p-next p)
+    (let* ((iter (let ((*no-brace-expr* t)) (parse-expr p)))
+           (body (parse-block p)))
+      (make-node :for_in (list binder iter body) :meta (tok-meta p tok)))))
+
+;;; --- switch and term patterns (SPEC §5.6) ---------------------------------------
+
+(defun parse-switch (p)
+  (let* ((tok (p-next p))
+         (scrutinee (let ((*no-brace-expr* t)) (parse-expr p))))
+    (p-expect p :lbrace "`{`")
+    (let ((arms '()))
+      (loop until (p-at p :rbrace)
+            do (push (parse-arm p) arms)
+               ;; Rust comma rule: comma required after expression arms,
+               ;; optional after }-terminated arms; trailing comma fine.
+               (cond ((p-at p :comma) (p-next p))
+                     ((p-at p :rbrace))
+                     ((eq (token-type (p-prev p)) :rbrace))
+                     (t (parse-error-at p (p-peek p)
+                                        "expected `,` after switch arm, got ~a"
+                                        (token-describe (p-peek p))))))
+      (p-next p)                        ; the closing brace
+      (make-node :switch (cons scrutinee (nreverse arms))
+                 :meta (tok-meta p tok)))))
+
+(defun parse-arm (p)
+  (let ((pattern (if (p-at-kw p :else)
+                     ;; `else` is sugar for `_` (SPEC §5.6)
+                     (let ((tok (p-next p)))
+                       (make-ident "_" :meta (tok-meta p tok)))
+                     (parse-pattern p))))
+    (let ((arrow (p-expect p :fat-arrow "`=>`")))
+      (make-node :arm (list pattern (parse-expr p))
+                 :meta (tok-meta p arrow)))))
+
+(defun parse-pattern (p)
+  "Term patterns (SPEC §5.6): bare identifiers *bind* (the exact inverse of
+macro patterns); literals and atoms match by ==; `_` is the wildcard."
+  (let ((tok (p-peek p)))
+    (case (token-type tok)
+      ((:int :float :string) (token-value (p-next p)))
+      (:minus
+       (p-next p)
+       (let ((num (p-peek p)))
+         (case (token-type num)
+           ((:int :float) (- (token-value (p-next p))))
+           (t (parse-error-at p num
+                              "patterns only negate number literals, got ~a"
+                              (token-describe num))))))
+      (:kw
+       (case (token-value tok)
+         (:true (p-next p) t)
+         (:false (p-next p) +sput-false+)
+         (:nil (p-next p) nil)
+         (t (parse-error-at p tok "expected a pattern, got ~a"
+                            (token-describe tok)))))
+      (:ident
+       (let ((tok (p-next p)))
+         (make-ident (token-value tok) :meta (tok-meta p tok))))
+      (:dot-ident
+       (let ((tok (p-next p)))
+         (if (p-at p :lparen)
+             ;; .tag(p1, p2) destructures tagged values, arity-checked
+             (progn
+               (p-next p)
+               (let ((subs '()))
+                 (unless (p-at p :rparen)
+                   (loop
+                     (push (parse-pattern p) subs)
+                     (if (p-at p :comma)
+                         (progn (p-next p)
+                                (when (p-at p :rparen) (return)))
+                         (return))))
+                 (p-expect p :rparen "`)`")
+                 (make-node :tagged_lit (cons (token-value tok) (nreverse subs))
+                            :meta (tok-meta p tok))))
+             (token-value tok))))      ; a bare atom matches by ==
+      (:lbracket
+       (let ((tok (p-next p))
+             (elems '()))
+         (unless (p-at p :rbracket)
+           (loop
+             (if (p-at p :ellipsis)
+                 ;; [p, ...rest] binds the tail; must be last
+                 (let ((etok (p-next p))
+                       (rest-tok (p-expect p :ident "a name after `...`")))
+                   (push (make-node :spread
+                                    (list (make-ident (token-value rest-tok)
+                                                      :meta (tok-meta p rest-tok)))
+                                    :meta (tok-meta p etok))
+                         elems)
+                   (when (p-at p :comma) (p-next p))
+                   (unless (p-at p :rbracket)
+                     (parse-error-at p (p-peek p)
+                                     "`...rest` must be the last element of a list pattern"))
+                   (return))
+                 (push (parse-pattern p) elems))
+             (if (p-at p :comma)
+                 (progn (p-next p)
+                        (when (p-at p :rbracket) (return)))
+                 (return))))
+         (p-expect p :rbracket "`]`")
+         (make-node :list_lit (nreverse elems) :meta (tok-meta p tok))))
+      (:dot-lbrace
+       (parse-record-shape p #'parse-pattern))
+      (t (parse-error-at p tok "expected a pattern, got ~a"
+                         (token-describe tok))))))
+
+(defun parse-record-shape (p value-parser)
+  "`.{ .name = X, ... }` where X comes from VALUE-PARSER — shared by record
+literals (expressions) and record patterns."
+  (let ((tok (p-expect p :dot-lbrace "`.{`"))
+        (inits '()))
+    (unless (p-at p :rbrace)
+      (loop
+        (let ((name-tok (p-peek p)))
+          (unless (eq (token-type name-tok) :dot-ident)
+            (parse-error-at p name-tok "expected a field (`.name = ...`), got ~a"
+                            (token-describe name-tok)))
+          (p-next p)
+          (p-expect p :assign "`=`")
+          (push (make-node :field_init
+                           (list (token-value name-tok) (funcall value-parser p))
+                           :meta (tok-meta p name-tok))
+                inits))
+        (if (p-at p :comma)
+            (progn (p-next p)
+                   (when (p-at p :rbrace) (return)))
+            (return))))
+    (p-expect p :rbrace "`}`")
+    (make-node :record_lit (nreverse inits) :meta (tok-meta p tok))))
 
 ;;; --- fn defs and lambdas (SPEC §5.4) ---------------------------------------------
 
@@ -301,8 +452,19 @@ expression form is anonymous (a name there is an error, SPEC §5.3)."
 
 ;;; --- expressions (SPEC §5.3, fixed table, tightest to loosest) -------------------
 
+(defvar *parse-depth* 0)
+
+(defparameter +max-parse-depth+ 500
+  "Nesting budget: recursive descent must signal a spanned Sputter error
+long before the host control stack would overflow into a raw backtrace (I2).")
+
 (defun parse-expr (p)
-  (parse-pipe p))
+  (let ((*parse-depth* (1+ *parse-depth*)))
+    (when (> *parse-depth* +max-parse-depth+)
+      (parse-error-at p (p-peek p)
+                      "this expression is nested more than ~d levels deep"
+                      +max-parse-depth+))
+    (parse-pipe p)))
 
 (defmacro def-left-binop (name next &body token->head)
   "Left-associative binary level: NAME loops over NEXT."
@@ -365,8 +527,14 @@ parse error."
      (let ((tok (p-next p)))
        (make-node :not (list (parse-unary p)) :meta (tok-meta p tok))))
     ((p-at p :minus)
-     (let ((tok (p-next p)))
-       (make-node :neg (list (parse-unary p)) :meta (tok-meta p tok))))
+     (let* ((tok (p-next p))
+            (operand (parse-unary p)))
+       ;; fold negated number literals into negative scalars: `-1` is the
+       ;; literal -1, so parse(print(n)) round-trips trees that carry
+       ;; negative scalars (there is no other surface syntax for them)
+       (if (and (not (node-p operand)) (numberp operand))
+           (- operand)
+           (make-node :neg (list operand) :meta (tok-meta p tok)))))
     (t (parse-postfix p))))
 
 (defun parse-postfix (p)
@@ -417,9 +585,8 @@ parse error."
          (:unreachable
           (let ((tok (p-next p)))
             (make-node :unreachable '() :meta (tok-meta p tok))))
-         ((:switch :for)
-          (parse-error-at p tok "`~(~a~)` arrives with M3; not supported yet"
-                          (token-value tok)))
+         (:switch (parse-switch p))
+         (:for (parse-for p))
          (:quote
           (parse-error-at p tok "`quote` arrives with M4; not supported yet"))
          (t (parse-error-at p tok "expected an expression, got ~a"
@@ -434,8 +601,49 @@ parse error."
          (parse-error-at p tok
                          "a `{` cannot start this expression (the braces here belong to the body); parenthesize the block"))
        (parse-block p))
-      ((:lbracket :dot-ident :dot-lbrace)
-       (parse-error-at p tok
-                       "lists, atoms, and records arrive with M3; not supported yet"))
+      (:lbracket (parse-list-literal p))
+      (:dot-lbrace
+       (parse-record-shape p (lambda (p)
+                               (let ((*no-brace-expr* nil))
+                                 (parse-expr p)))))
+      (:dot-ident
+       ;; prefix position: an atom, or `.tag(v1, v2)` — a tagged literal
+       (let ((tok (p-next p)))
+         (if (p-at p :lparen)
+             (progn
+               (p-next p)
+               (let ((vals '())
+                     (*no-brace-expr* nil))
+                 (unless (p-at p :rparen)
+                   (loop
+                     (push (parse-expr p) vals)
+                     (if (p-at p :comma)
+                         (progn (p-next p)
+                                (when (p-at p :rparen) (return)))
+                         (return))))
+                 (p-expect p :rparen "`)`")
+                 (make-node :tagged_lit (cons (token-value tok) (nreverse vals))
+                            :meta (tok-meta p tok))))
+             (token-value tok))))
       (t (parse-error-at p tok "expected an expression, got ~a"
                          (token-describe tok))))))
+
+(defun parse-list-literal (p)
+  "`[a, b, ...rest]` — elements are expressions; `...expr` is a spread."
+  (let ((tok (p-expect p :lbracket "`[`"))
+        (elems '())
+        (*no-brace-expr* nil))
+    (unless (p-at p :rbracket)
+      (loop
+        (if (p-at p :ellipsis)
+            (let ((etok (p-next p)))
+              (push (make-node :spread (list (parse-expr p))
+                               :meta (tok-meta p etok))
+                    elems))
+            (push (parse-expr p) elems))
+        (if (p-at p :comma)
+            (progn (p-next p)
+                   (when (p-at p :rbracket) (return)))
+            (return))))
+    (p-expect p :rbracket "`]`")
+    (make-node :list_lit (nreverse elems) :meta (tok-meta p tok))))

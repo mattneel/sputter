@@ -9,21 +9,27 @@
 (defun run-golden-case (src mode args-fn expected-path)
   (multiple-value-bind (actual code)
       (h:run-cli (funcall args-fn src))
-    (declare (ignorable code))
-    (if (h:golden-update-p)
-        (progn
-          (with-open-file (s expected-path
-                             :direction :output
-                             :if-exists :supersede
-                             :if-does-not-exist :create)
-            (write-string actual s))
-          (ok t (format nil "updated ~a" (file-namestring expected-path))))
-        (let* ((expected (uiop:read-file-string expected-path))
-               (same (string= expected actual)))
-          (ok same
-              (format nil "~a [~a]~@[~%~a~]"
-                      (file-namestring src) mode
-                      (unless same (h:diff-report expected actual))))))
+    (let ((code-ok (h:exit-code-ok-p src code)))
+      (ok code-ok
+          (format nil "~a [~a] exit code ~d ~:[breaks~;fits~] the err_* discipline"
+                  (file-namestring src) mode code code-ok))
+      (if (h:golden-update-p)
+          (if code-ok
+              (progn
+                (with-open-file (s expected-path
+                                   :direction :output
+                                   :if-exists :supersede
+                                   :if-does-not-exist :create)
+                  (write-string actual s))
+                (ok t (format nil "updated ~a" (file-namestring expected-path))))
+              (ok nil (format nil "refusing to update ~a: exit ~d~%~a"
+                              (file-namestring expected-path) code actual)))
+          (let* ((expected (uiop:read-file-string expected-path))
+                 (same (string= expected actual)))
+            (ok same
+                (format nil "~a [~a]~@[~%~a~]"
+                        (file-namestring src) mode
+                        (unless same (h:diff-report expected actual)))))))
     (ok (not (h:looks-like-sexp-p actual))
         (format nil "~a [~a] stays above the Waterline"
                 (file-namestring src) mode))))
