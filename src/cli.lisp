@@ -353,5 +353,5 @@ Everything written here is user-facing: Sputter prose only (I2)."
        2))))
 
 (defun cli-main ()
-  "Entry point for bin/sput."
+  "Entry point for bin/sput (script shim and saved image alike)."
   (host-exit (cli-dispatch (host-argv))))

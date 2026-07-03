@@ -132,7 +132,10 @@ skip unmarked user binders and reach the definition environment's globals."
 
 (defparameter +known-type-names+
   '(:|i32| :|i64| :|u32| :|u64| :|int| :|f32| :|f64| :|bool| :|str| :|atom|
-    :|list| :|record| :|node| :|any|))
+    :|list| :|record| :|node| :|any|
+    ;; kind names double as ascriptions in macro bodies — the bind-first
+    ;; idiom writes `let name: ident = concat_ident(...)` (SPEC §5.8.3)
+    :|expr| :|stmt| :|block| :|ident| :|literal| :|type| :|arm|))
 
 (defun lower-type (type-node)
   "type_ident node -> type keyword; unknown names warn and become :|any|
@@ -340,8 +343,14 @@ bindings extend the environment for the statements that follow."
                                              :callee t)
                             (lower-expr callee env))
                         call-args))))
-           (:field (pl :p.field node (list (lower-expr (first args) env)
-                                           (second args))))
+           (:field
+            ;; the name slot is a keyword — or an ident node when a
+            ;; template's computed field access (insert) spliced one in
+            (let ((fname (second args)))
+              (pl :p.field node (list (lower-expr (first args) env)
+                                      (if (ident-node-p fname)
+                                          (ident-name fname)
+                                          fname)))))
            (:index (pl :p.index node (list (lower-expr (first args) env)
                                            (lower-expr (second args) env))))
            (:if

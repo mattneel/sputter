@@ -869,8 +869,21 @@ specific longest-match rule needed by `unless` (§10.2)."
              (setf e (make-node :index (list e idx) :meta (tok-meta p tok))))))
         ((p-at p :dot-ident)
          (let ((tok (p-next p)))
-           (setf e (make-node :field (list e (token-value tok))
-                              :meta (tok-meta p tok)))))
+           (if (and *in-quote*
+                    (eq (token-value tok) :|insert|)
+                    (p-at p :lparen))
+               ;; computed field access in a template: r.insert(field)
+               ;; (SPEC §5.8.3's getter example)
+               (progn
+                 (p-next p)
+                 (let ((expr (let ((*no-brace-expr* nil)) (parse-expr p))))
+                   (p-expect p :rparen "`)`")
+                   (setf e (make-node :field
+                                      (list e (make-node :insert (list expr)
+                                                         :meta (tok-meta p tok)))
+                                      :meta (tok-meta p tok)))))
+               (setf e (make-node :field (list e (token-value tok))
+                                  :meta (tok-meta p tok))))))
         (t (return e))))))
 
 (defun parse-primary (p)

@@ -24,6 +24,10 @@
     (:|int| . integer)
     (:|f32| . single-float) (:|f64| . double-float)
     (:|bool| . sput-bool) (:|str| . string) (:|atom| . keyword)
+    ;; kind ascriptions (macro-body bind-first idiom, SPEC §5.8.3);
+    ;; expr/stmt/literal fragments can be scalars, so they stay loose
+    (:|expr| . t) (:|stmt| . t) (:|block| . node) (:|ident| . node)
+    (:|literal| . t) (:|type| . node) (:|arm| . node)
     (:|list| . list) (:|record| . hash-table) (:|node| . node) (:|any| . t)))
 
 (defun cl-type (type-kw)

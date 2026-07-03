@@ -151,8 +151,15 @@ bracketed argument positions) makes the text unparseable without parens."
                 (maybe-paren (format nil "~a[~a]" obj idx) 9 req))))
            (:field
             (a:when-let ((obj (render-expr (first args) 9)))
-              (maybe-paren (format nil "~a.~a" obj (symbol-name (second args)))
-                           9 req)))
+              (let ((fname (second args)))
+                (maybe-paren
+                 (cond ((keywordp fname)
+                        (format nil "~a.~a" obj (symbol-name fname)))
+                       ((ident-node-p fname)  ; spliced computed field
+                        (format nil "~a.~a" obj (symbol-name (ident-name fname))))
+                       (t                     ; unexpanded template: .insert(e)
+                        (format nil "~a.~a" obj (render-expr fname 0))))
+                 9 req))))
            (:block (render-block-inline x))
            (:if (render-if-inline x))
            ((:while :for_in)

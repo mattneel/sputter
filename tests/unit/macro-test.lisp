@@ -224,3 +224,36 @@
         { only_empty { } } => { 0 },
     }
     only_empty { 1 };"))
+
+(deftest getter-bind-first-idiom
+  ;; the §5.8.3 getter example verbatim: computed identifiers via
+  ;; concat_ident (bind-first) and computed field access via insert()
+  (ok (eql (eval-src
+            "macro fn getter(field: ident) stmt {
+                 let name: ident = concat_ident(\"get_\", field);
+                 quote(stmt) { fn name(r) { r.insert(field) } }
+             }
+
+             getter(age);
+             get_age(.{ .age = 7 });")
+           7)
+      "the getter macro defines a user-visible accessor")
+  (let ((out (expand-print
+              "macro fn getter(field: ident) stmt {
+                   let name: ident = concat_ident(\"get_\", field);
+                   quote(stmt) { fn name(r) { r.insert(field) } }
+               }
+               getter(age);")))
+    (ok (search "fn get_age(r__h" out)
+        "the computed name is user-visible; the template param is renamed")
+    (ok (search ".age" out)
+        "insert() in field position expands to plain field access"))
+  (ok (not (search "unknown type"
+                   (with-output-to-string (*error-output*)
+                     (eval-src
+                      "macro fn m(e: expr) expr {
+                           let name: ident = gensym_ident(\"t\");
+                           quote { { let name = e; name } }
+                       }
+                       m(4);"))))
+      "kind ascriptions in macro bodies don't warn"))
