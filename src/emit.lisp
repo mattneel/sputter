@@ -97,8 +97,11 @@ when registered, else the mangled user symbol (late-bound)."
            (:global `(sput-global-set ',name ,(emit-plasma value))))))
       (:p.while
        (destructuring-bind (c body) args
-         `(loop while (truthy ,(emit-plasma c))
-                do ,(emit-plasma body))))
+         ;; `while` has value nil (§5.4) — the nil singleton, not the
+         ;; empty list LOOP would return
+         `(progn (loop while (truthy ,(emit-plasma c))
+                       do ,(emit-plasma body))
+                 ',+sput-nil+)))
       (:p.return
        (progn
          (assert *current-block* () "p.return emitted outside a function")
@@ -273,7 +276,7 @@ image is the staging evaluator."
      (install-by-example-macro node))
     (t
      (let ((expanded (expand-node node))
-           (value nil))
+           (value +sput-nil+))
        (assert-no-macro-space expanded "the lowerer")
        (dolist (p (lower-top-form expanded) value)
          (validate-plasma p)
@@ -286,6 +289,6 @@ image is the staging evaluator."
   "Compile + execute one .sput file in the current image state.
 Returns the value of the last top-level form."
   (let ((stmts (parse-module (read-source-file path) :file path))
-        (value nil))
+        (value +sput-nil+))
     (dolist (s stmts value)
       (setf value (eval-top-form s)))))

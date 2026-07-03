@@ -1,0 +1,14 @@
+println(show([] == nil));
+println(show([] == []));
+println(show(nil == nil));
+println(show([]));
+println(show(nil));
+println(show([nil, [], false]));
+println(if [] { "empty lists are truthy" } else { "unreachable" });
+println(if nil { "unreachable" } else { "nil is falsy" });
+var seen = 0;
+for x in [] { seen += 1; }
+println(seen);
+println(show(switch [] { nil => .was_nil, [] => .was_empty_list, }));
+println(show(switch nil { [] => .was_empty_list, nil => .was_nil, }));
+println(show(len([])));

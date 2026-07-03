@@ -140,7 +140,7 @@ skip unmarked user binders and reach the definition environment's globals."
 (defun lower-type (type-node)
   "type_ident node -> type keyword; unknown names warn and become :|any|
 (SPEC §13.16)."
-  (when type-node
+  (when (and type-node (not (absent-p type-node)))
     (let ((name (first (node-args type-node))))
       (if (member name +known-type-names+)
           name
@@ -252,7 +252,7 @@ bindings extend the environment for the statements that follow."
                     (new-env (lenv-extend env name-kw :let
                                           (binder-scopes name-ident)))
                     (p-fn (lower-fn node new-env :name name-kw)))
-               (values (list (pl :p.let node (list name-kw nil (pl :p.lit node (list nil))))
+               (values (list (pl :p.let node (list name-kw nil (pl :p.lit node (list +sput-nil+))))
                              (pl :p.assign node (list name-kw :local p-fn)))
                        new-env))
              (values (list (lower-expr node env)) env)))
@@ -321,7 +321,11 @@ bindings extend the environment for the statements that follow."
 
 (defun lower-expr (node env)
   (cond
-    ((not (node-p node)) (pl :p.lit node (list node)))
+    ((not (node-p node))
+     ;; CL NIL in an expression position is structural absence used as a
+     ;; value (a bare `return;`, a `;`-terminated block's value slot):
+     ;; it means the nil literal, never the empty list
+     (pl :p.lit node (list (if (null node) +sput-nil+ node))))
     (t
      (let ((head (node-head node))
            (args (node-args node)))
@@ -357,11 +361,13 @@ bindings extend the environment for the statements that follow."
             (destructuring-bind (c then else) args
               (pl :p.if node (list (lower-expr c env)
                                    (lower-block then env)
-                                   (if else
+                                   ;; absent-p: parser absence is CL NIL, but
+                                   ;; macro-built ifs may carry the nil literal
+                                   (if (not (absent-p else))
                                        (if (eq (node-head else) :block)
                                            (lower-block else env)
                                            (lower-expr else env))
-                                       (pl :p.lit node (list nil)))))))
+                                       (pl :p.lit node (list +sput-nil+)))))))
            (:block (lower-block node env))
            (:while
             (destructuring-bind (c body) args
@@ -562,7 +568,10 @@ bind; `_` doesn't; literals/atoms match by ==."
                           (pl :p.host_call node
                               (list 'sput-check-list (lower-expr iter env)))))
                 (pl :p.while node
-                    (list cursor-ref   ; a non-empty list is truthy, [] is nil
+                    (list (pl :p.host_call node
+                              ;; [] is truthy now (§13.18): the loop test
+                              ;; must ask 'non-empty list?', not 'truthy?'
+                              (list 'sput-list-non-empty cursor-ref))
                           (pl :p.block node
                               (list (pl :p.let node
                                         (list binder-kw nil
@@ -573,5 +582,5 @@ bind; `_` doesn't; literals/atoms match by ==."
                                         (list cursor :local
                                               (pl :p.host_call node
                                                   (list 'cdr cursor-ref))))
-                                    (pl :p.lit node (list nil))))))
-                (pl :p.lit node (list nil)))))))
+                                    (pl :p.lit node (list +sput-nil+))))))
+                (pl :p.lit node (list +sput-nil+)))))))

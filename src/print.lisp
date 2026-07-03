@@ -21,8 +21,11 @@ offers no multiline form — a long line beats a crash or wrong output.")
 
 (defun literal-string (x)
   "Render a scalar as a Sputter literal (negative numbers included: the
-parser folds `-1` back into the scalar, so this round-trips)."
+parser folds `-1` back into the scalar, so this round-trips). CL NIL here
+is a structural-absence slot flowing through a data rendering (dump of an
+if-without-else): it reads back as `nil`, which absent-p accepts."
   (cond ((eq x t) "true")
+        ((sput-nil-p x) "nil")
         ((null x) "nil")
         ((sput-false-p x) "false")
         ((integerp x) (format nil "~d" x))
@@ -784,9 +787,11 @@ one `|> stage` per line, indented one step (§10.1 layout)."
 ;;; --- show: runtime values as Sputter literals (SPEC §5.7) ---------------------
 
 (defun show-value (v)
-  "Runtime values rendered as Sputter literals; the REPL echoes through this."
+  "Runtime values rendered as Sputter literals; the REPL echoes through this.
+CL NIL is the empty list (§13.18), so it shows as `[]`."
   (cond ((eq v t) "true")
-        ((null v) "nil")
+        ((sput-nil-p v) "nil")
+        ((null v) "[]")
         ((sput-false-p v) "false")
         ((integerp v) (format nil "~d" v))
         ((floatp v) (float-literal-string v))

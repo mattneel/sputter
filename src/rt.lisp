@@ -109,7 +109,7 @@ symbol value cells so locals shadow lexically and sessions reset cleanly.")
 
 (defun sput-bool-of (generalized)
   "CL generalized boolean -> Sputter boolean (comparisons must never return
-CL NIL, which is Sputter's nil, not false)."
+CL NIL: that is Sputter's empty list, not false)."
   (if generalized t +sput-false+))
 
 (defun check-numbers (op a b)
@@ -256,6 +256,10 @@ provenance, not identity). Returns a CL generalized boolean; sput-eq wraps."
       (rt-panic "cannot spread ~a into a list" (show-value s))))
   (apply #'append segments))
 
+(defun sput-list-non-empty (x)
+  "for..in's loop test: [] is truthy now (§13.18), so emptiness needs asking."
+  (if (consp x) t +sput-false+))
+
 (defun sput-check-list (x)
   (unless (listp x)
     (rt-panic "for..in iterates lists, got ~a" (show-value x)))
@@ -328,11 +332,13 @@ the same Sputter literal renderer as `show`."
 
 (defun lift-splice (v)
   "Validate a bare-name splice inside a quote: nodes splice as nodes,
-scalars lift to literals; nothing else fits in a syntax tree."
-  (if (or (node-p v) (scalarp v))
-      v
-      (rt-panic "cannot splice ~a into a quote (nodes and scalars only; `...name` splices lists of nodes, M6)"
-                (show-value v))))
+scalars lift to literals, the empty list lifts to its literal `[]`;
+nothing else fits in a syntax tree."
+  (cond ((or (node-p v) (scalarp v)) v)
+        ;; [] is a value, not syntax: lift it to the empty-list literal
+        ((null v) (make-node :list_lit '()))
+        (t (rt-panic "cannot splice ~a into a quote (nodes and scalars only; `...name` splices lists of nodes)"
+                     (show-value v)))))
 
 ;;; --- hygiene marks (SPEC §5.8.5) ---------------------------------------------------
 ;;; The expander binds *expansion-mark* around each macro invocation;
@@ -361,9 +367,11 @@ Outside an expansion this is the identity (term-level quotes are unmarked)."
 
 (defun %rebuild-node (head meta args)
   "Quote-lowering support: rebuild a node around spliced children (marked
-when inside an expansion — the rebuilt node is template text)."
+when inside an expansion — the rebuilt node is template text). CL NIL is a
+structural-absence slot (a template if-without-else, an untyped let), not a
+splice."
   (dolist (a args)
-    (unless (or (node-p a) (scalarp a) (token-group-p a))
+    (unless (or (node-p a) (scalarp a) (token-group-p a) (null a))
       (rt-panic "cannot splice ~a into a quote" (show-value a))))
   (make-node head args
              :meta (if *expansion-mark* (marked-meta meta) meta)))
@@ -421,9 +429,9 @@ fresh (unmarked) identifier node."
   "Node meta exposed as a record (SPEC §4.1's .{ .file, .line, .col,
 .scopes, .synthetic })."
   (let ((m (node-meta (check-node "meta" n))))
-    (make-record :|file| (meta-file m)
-                 :|line| (meta-line m)
-                 :|col| (meta-col m)
+    (make-record :|file| (or (meta-file m) +sput-nil+)
+                 :|line| (or (meta-line m) +sput-nil+)
+                 :|col| (or (meta-col m) +sput-nil+)
                  :|scopes| (copy-list (meta-scopes m))
                  :|synthetic| (if (meta-synthetic m) t +sput-false+))))
 
@@ -441,8 +449,9 @@ the internal head keyword."
 
 (defun sput-prewalk (x f)
   "prewalk with runtime validation: F must return nodes or scalars.
-Macro-call token payloads are opaque — they pass through without visiting F."
-  (if (token-group-p x)
+Macro-call token payloads and structural-absence slots (CL NIL: a missing
+else/type/name) are opaque — they pass through without visiting F."
+  (if (or (token-group-p x) (null x))
       x
       (let ((y (funcall f x)))
         (unless (or (node-p y) (scalarp y))
@@ -454,7 +463,7 @@ Macro-call token payloads are opaque — they pass through without visiting F."
             y))))
 
 (defun sput-postwalk (x f)
-  (if (token-group-p x)
+  (if (or (token-group-p x) (null x))
       x
       (let* ((walked (if (node-p x)
                          (make-node (node-head x)
@@ -506,7 +515,7 @@ Macro-call token payloads are opaque — they pass through without visiting F."
   (unless (functionp thunk)
     (rt-panic "test body did not compile to a thunk"))
   (push (cons name thunk) *registered-tests*)
-  nil)
+  +sput-nil+)
 
 ;;; --- user-facing builtins (registered by the prelude) --------------------------
 
@@ -517,7 +526,7 @@ Macro-call token payloads are opaque — they pass through without visiting F."
   "println: strings print raw; everything else through `show` (§5.7)."
   (write-string (if (stringp v) v (show-value v)) *standard-output*)
   (terpri *standard-output*)
-  nil)
+  +sput-nil+)
 
 (defun sput-panic-builtin (msg)
   (sput-panic (if (stringp msg) msg (show-value msg))))

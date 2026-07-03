@@ -489,7 +489,7 @@ macro patterns); literals and atoms match by ==; `_` is the wildcard."
        (case (token-value tok)
          (:true (p-next p) t)
          (:false (p-next p) +sput-false+)
-         (:nil (p-next p) nil)
+         (:nil (p-next p) +sput-nil+)
          (t (parse-error-at p tok "expected a pattern, got ~a"
                             (token-describe tok)))))
       (:ident
@@ -911,7 +911,7 @@ specific longest-match rule needed by `unless` (§10.2)."
        (case (token-value tok)
          (:true (p-next p) t)
          (:false (p-next p) +sput-false+)
-         (:nil (p-next p) nil)
+         (:nil (p-next p) +sput-nil+)
          (:if (parse-if p))
          (:while (parse-while p))
          (:fn (parse-fn p :named nil))

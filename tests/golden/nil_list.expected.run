@@ -1,0 +1,12 @@
+false
+true
+true
+[]
+nil
+[nil, [], false]
+empty lists are truthy
+nil is falsy
+0
+.was_empty_list
+.was_nil
+0

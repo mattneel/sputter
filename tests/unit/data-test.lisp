@@ -103,8 +103,12 @@
       "tagged == recurses with numeric ==")
   (ok (s:sput-false-p (eval-src ".ok(1) == .err(1);")))
   (ok (eq (eval-src "[1, [2]] == [1.0, [2.0]];") t) "deep list ==")
-  (ok (eq (eval-src "[] == nil;") t)
-      "[] and nil are the same value in v0.1 (spec-pinned representation)"))
+  (ok (s:sput-false-p (eval-src "[] == nil;"))
+      "[] != nil (§13.18, human veto)")
+  (ok (eq (eval-src "[] == [];") t) "[] equals []")
+  (ok (eq (eval-src "if [] { .truthy } else { .falsy };") :|truthy|)
+      "[] is truthy (Elixir)")
+  (ok (eq (eval-src "nil == nil;") t) "nil equals nil"))
 
 (deftest switch-semantics
   (ok (equal (eval-src "switch .ok(7) { .ok(v) => v + 1, .err(e) => e };") 8)
@@ -152,7 +156,7 @@
 
 (deftest for-in
   (ok (eql (eval-src "var total = 0; for x in [1, 2, 3] { total += x; } total;") 6))
-  (ok (null (eval-src "for x in [] { panic(\"never\"); };"))
+  (ok (s:sput-nil-p (eval-src "for x in [] { panic(\"never\"); };"))
       "empty lists loop zero times, value nil")
   (ok (signals (eval-src "for x in [1] { x = 2; }") 's:sputter-lower-error)
       "the binder is immutable")
@@ -164,8 +168,10 @@
   (ok (equal (eval-src "show(.ok(1, \"x\"));") ".ok(1, \"x\")"))
   (ok (equal (eval-src "show(.{});") ".{}"))
   (ok (equal (eval-src "show([[1], .err(nil)]);") "[[1], .err(nil)]"))
-  (ok (equal (eval-src "show([]);") "nil")
-      "[] shows as nil (same value in v0.1)"))
+  (ok (equal (eval-src "show([]);") "[]") "[] shows as []")
+  (ok (equal (eval-src "show(nil);") "nil") "nil shows as nil")
+  (ok (equal (eval-src "show([nil, []]);") "[nil, []]")
+      "the two render distinctly inside collections"))
 
 (deftest prelude-collections
   (ok (eql (eval-src "len([1, 2, 3]);") 3))

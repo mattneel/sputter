@@ -11,7 +11,8 @@ ever emits them.")
    ;; host.lisp
    #:host-argv #:host-getenv #:host-exit
    ;; rt.lisp (grows in M2)
-   #:+sput-false+ #:sput-false-p #:truthy
+   #:+sput-false+ #:sput-false-p #:+sput-nil+ #:sput-nil-p #:absent-p
+   #:truthy
    ;; conditions (SPEC §8)
    #:sputter-error #:sputter-parse-error #:sputter-expand-error
    #:sputter-lower-error #:sputter-panic

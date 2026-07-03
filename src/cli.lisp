@@ -169,7 +169,7 @@ Returns true when handled; anything unrecognized is an implementation bug."
     (when (null files)
       (error 'sputter-error :message "`sput run` needs at least one file"))
     (reset-globals)
-    (let ((last nil))
+    (let ((last +sput-nil+))
       (dolist (f files)
         (setf last (run-file f)))
       (when (member "--echo-last" flags :test #'string=)
@@ -297,7 +297,7 @@ Returns the value to echo."
     (ecase (first parsed)
       (:expr (eval-top-form (second parsed)))
       (:module
-       (let ((value nil))
+       (let ((value +sput-nil+))
          (dolist (s (second parsed) value)
            (setf value (eval-top-form s))))))))
 

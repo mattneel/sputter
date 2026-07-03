@@ -297,7 +297,7 @@ TypeExpr is trivial; it's load-bearing later.
 | Integer / Float | `42`, `1.5` | integer / double-float |
 | String | `"hi"` | simple string |
 | Boolean | `true`, `false` | `T` / `+sput-false+` singleton struct (see below) |
-| Nil | `nil` | `NIL` |
+| Nil | `nil` | `+sput-nil+` singleton — distinct from the empty list; `NIL` is only ever `[]` |
 | Atom | `.ok` | keyword `:OK` |
 | Tagged | `.ok(v1, v2)` | `%tagged` struct: tag keyword + values (simple-vector) |
 | List | `[1, 2, 3]`, spread `[a, ...rest]` | CL list |
@@ -305,10 +305,13 @@ TypeExpr is trivial; it's load-bearing later.
 | Function | `fn(x) { ... }` | CL function |
 | Node | `quote { ... }` | `node` struct (§4.2) |
 
-- **Truthiness:** `false` and `nil` are falsy; everything else truthy. `false` is a
-  distinct singleton (Elixir model: `nil ≠ false`, both falsy) — CL `NIL` can't play
-  both roles. Every conditional lowers through `(truthy x)`, an inlined rt function:
-  `(not (or (null x) (sput-false-p x)))`. Cost ≈ zero under SBCL inlining.
+- **Truthiness:** `false` and `nil` are falsy; everything else truthy — including
+  `[]` (the Elixir model, in full: `nil` and `false` are distinct singletons, and
+  the empty list is a list, not nil — `[] != nil`, `[]` is truthy). CL `NIL` plays
+  no role beyond the empty list. Every conditional lowers through `(truthy x)`, an
+  inlined rt function testing the two falsy singletons. Cost ≈ zero under SBCL
+  inlining. (Human veto 2026-07-02: the earlier stage-0 pun `[] ≡ nil` is out;
+  see §13.18.)
 - **Equality:** `==` is structural `sput-equal`: numbers by `=` (so `1 == 1.0`,
   Elixir-style, §13), atoms/booleans by identity, strings `string=`, lists/records/
   tagged/nodes recursively. `!=` is its negation.
@@ -557,7 +560,7 @@ Notes:
 | `p.while` | `loop while (truthy c) do ...` |
 | `==` | rt `sput-equal` |
 | `++` | rt `sput-concat` (string/string, list/list; type mismatch panics) |
-| arithmetic/comparison | direct CL (`+ - * / mod = /= < <= > >=`) via the known-function table; SBCL specializes where declarations allow |
+| arithmetic/comparison | direct CL (`+ - * / rem = /= < <= > >=`) via the known-function table; SBCL specializes where declarations allow. `%` is truncated `rem` (C/Zig, matching the `.rem` head) — human veto 2026-07-02 |
 | `p.panic` | `(error 'sputter-panic :message ... :span ...)` |
 | identifiers | mangled per §5.1 into package `SPUTTER` |
 
@@ -800,6 +803,10 @@ silently changed. The human veto-scans this list.
     idents warn and emit `t`.
 17. **Naming:** core IR is **Plasma** (fallback label "Sputter Core" if the whimsy
     wears thin); snake_case identifiers; `concat_ident` (not `concatIdent`).
+18. **`nil` is a distinct singleton; `[] != nil`** (human veto 2026-07-02).
+    `[]` is truthy and equals only `[]`; `show([])` prints `[]`; `%` stays
+    truncated `rem` (same veto). CL `NIL` in node args is reserved for
+    structural absence (a missing else/type/name), never a value.
 
 ## 14. Non-goals for v0.1
 

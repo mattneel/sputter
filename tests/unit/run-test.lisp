@@ -119,7 +119,7 @@
 
 (deftest control
   (ok (eql (eval-src "var n = 0; while n < 5 { n += 2; } n;") 6))
-  (ok (null (eval-src "var n = 0; while n < 3 { n += 1; };"))
+  (ok (s:sput-nil-p (eval-src "var n = 0; while n < 3 { n += 1; };"))
       "while has value nil")
   (panics "unreachable;")
   (panics "panic(\"boom\");"))

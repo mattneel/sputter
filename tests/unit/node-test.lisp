@@ -38,7 +38,8 @@
   (ok (s:scalarp :ok) "atoms are scalars")
   (ok (s:scalarp t) "true is a scalar")
   (ok (s:scalarp s:+sput-false+) "false is a scalar")
-  (ok (s:scalarp nil) "nil is a scalar")
+  (ok (s:scalarp s:+sput-nil+) "nil (the singleton) is a scalar")
+  (ok (not (s:scalarp nil)) "CL NIL is not a scalar — it is [] and structural absence")
   (ok (not (s:scalarp (make-hash-table))) "host objects are not scalars")
   (ok (not (s:scalarp 'foo)) "non-keyword symbols are not scalars"))
 
@@ -47,7 +48,8 @@
   (ok (s:truthy 0) "zero is truthy")
   (ok (s:truthy "") "the empty string is truthy")
   (ok (s:truthy :ok) "atoms are truthy")
-  (ok (not (s:truthy nil)) "nil is falsy")
+  (ok (not (s:truthy s:+sput-nil+)) "nil is falsy")
+  (ok (s:truthy nil) "[] is truthy (a list, not nil — §13.18)")
   (ok (not (s:truthy s:+sput-false+)) "false is falsy")
   (ok (not (eq s:+sput-false+ nil)) "false and nil are distinct values"))
 

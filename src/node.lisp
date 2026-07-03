@@ -23,10 +23,28 @@
   (print-unreadable-object (x stream)
     (write-string "sput-false" stream)))
 
+;; `nil` is likewise a distinct singleton (SPEC §5.5, §13.18 — human veto
+;; 2026-07-02): the empty list is a list, not nil. CL NIL means only `[]`
+;; at runtime, and structural absence (a missing else/type/name) in node args.
+(defstruct (sput-nil (:constructor %make-sput-nil)))
+
+(defvar +sput-nil+ (%make-sput-nil)
+  "The unique runtime value of the Sputter literal `nil`.")
+
+(defmethod print-object ((x sput-nil) stream)
+  (print-unreadable-object (x stream)
+    (write-string "sput-nil" stream)))
+
 (declaim (inline truthy))
 (defun truthy (x)
-  "Sputter truthiness: `false` and `nil` are falsy; everything else is truthy."
-  (not (or (null x) (sput-false-p x))))
+  "Sputter truthiness: `false` and `nil` are falsy; everything else — the
+empty list included — is truthy (SPEC §5.5)."
+  (not (or (sput-nil-p x) (sput-false-p x))))
+
+(defun absent-p (x)
+  "Structural absence in a node slot: parser-built trees use CL NIL; user- or
+macro-built trees may carry the nil literal. Both read as 'not there'."
+  (or (null x) (sput-nil-p x)))
 
 ;;; --- meta ------------------------------------------------------------------
 
@@ -65,9 +83,11 @@
   (args '() :type list))
 
 (defun scalarp (x)
-  "True when X is a Sputter scalar: integer, float, string, boolean, atom, nil."
+  "True when X is a Sputter scalar: integer, float, string, boolean, atom,
+nil. CL NIL is *not* a scalar — it is the empty list (a value, not syntax)
+and the structural-absence marker in node slots."
   (or (integerp x) (floatp x) (stringp x) (keywordp x)
-      (eq x t) (sput-false-p x) (null x)))
+      (eq x t) (sput-false-p x) (sput-nil-p x)))
 
 (declaim (ftype (function (t t) t) token-group-equal)) ; lex.lisp
 
