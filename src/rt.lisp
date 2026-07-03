@@ -314,6 +314,12 @@ provenance, not identity). Returns a CL generalized boolean; sput-eq wraps."
 the same Sputter literal renderer as `show`."
   (if (stringp x) x (show-value x)))
 
+(defun sput-atom-name (x)
+  "Internal M8 helper: return an atom keyword's bare language spelling."
+  (unless (keywordp x)
+    (rt-panic "atom-name wants an atom, got ~a" (show-value x)))
+  (symbol-name x))
+
 (defun sput-check-listy (who xs)
   (unless (listp xs)
     (rt-panic "~a wants a list, got ~a" who (show-value xs))))

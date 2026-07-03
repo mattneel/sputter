@@ -33,6 +33,7 @@
                              (:file "run-test")
                              (:file "data-test")
                              (:file "quote-test")
-                             (:file "macro-test")))
+                             (:file "macro-test")
+                             (:file "stage1-print-test")))
                (:file "golden"))
   :perform (asdf:test-op (o c) (uiop:symbol-call :rove :run c)))

@@ -17,6 +17,8 @@
     ("len" . sput-len)
     ("push" . sput-push)
     ("str" . sput-str)
+    ;; internal helper for the M8 stage-1 printer module.
+    ("__sput_atom_name" . sput-atom-name)
     ;; nodes as values (SPEC §4.4, M4)
     ("head" . sput-head)
     ("args" . sput-args)

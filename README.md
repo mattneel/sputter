@@ -92,6 +92,13 @@ bin/sput build-image          # writes bin/sput.image
 bin/sput help                 # automatically uses it
 ```
 
+## Stage-1 beachhead
+
+`src-sput/print.sput` is compiled by stage 0 and exposes `stage1_print_node`.
+The test suite diffs it against the CL printer over every parseable form in the
+golden corpus, proving the first self-hosted source can participate in the
+toolchain without replacing the trusted stage-0 path yet.
+
 ## Status
 
 Working through the v0.1 milestones (SPEC.md §11):
@@ -104,7 +111,7 @@ Working through the v0.1 milestones (SPEC.md §11):
 - [x] M5 — procedural macros (`macro fn`), hygiene
 - [x] M6 — by-example macros (`macro name { pattern => template }`)
 - [x] M7 — prelude, `sput test`, polish
-- [ ] M8 — stage-1 beachhead: the printer, self-hosted in Sputter
+- [x] M8 — stage-1 beachhead: the printer, self-hosted in Sputter
 
 ## Repo map
 
@@ -112,6 +119,8 @@ Working through the v0.1 milestones (SPEC.md §11):
 - `DECISIONS.md` — the running ledger of calls made where the spec is silent.
 - `src/` — stage-0 compiler in Common Lisp: lexer → parser → expander →
   lowerer (to the **Plasma** core IR) → emitter (Plasma → CL) → SBCL.
+- `src-sput/` — stage-1 Sputter sources compiled by stage 0; currently the
+  M8 printer beachhead.
 - `tests/unit/` — rove suites. `tests/golden/` — golden corpus
   (`SPUTTER_GOLDEN=update make test` regenerates).
 - `examples/` — the normative programs from SPEC.md §10.

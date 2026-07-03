@@ -1,0 +1,298 @@
+// Stage-1 printer beachhead (SPEC §11, M8).
+//
+// This file is compiled by the stage-0 Sputter compiler. It owns a real
+// Sputter-side inline renderer for scalars and simple expression syntax, then
+// deliberately falls back to the trusted stage-0 `print` builtin for complex
+// multiline forms. The M8 test suite diffs `stage1_print_node` against the CL
+// printer over the golden corpus so this file is executable self-hosting
+// scaffolding without betting the toolchain on it yet.
+
+fn stage1_atom_name(atom) {
+    __sput_atom_name(atom)
+}
+
+fn stage1_binop_text(head) {
+    switch head {
+        .pipe => "|>",
+        .or => "or",
+        .and => "and",
+        .eq => "==",
+        .ne => "!=",
+        .lt => "<",
+        .le => "<=",
+        .gt => ">",
+        .ge => ">=",
+        .add => "+",
+        .sub => "-",
+        .concat => "++",
+        .mul => "*",
+        .div => "/",
+        .rem => "%",
+        _ => nil,
+    }
+}
+
+fn stage1_binop_prec(head) {
+    switch head {
+        .pipe => 2,
+        .or => 3,
+        .and => 4,
+        .eq => 5,
+        .ne => 5,
+        .lt => 5,
+        .le => 5,
+        .gt => 5,
+        .ge => 5,
+        .add => 6,
+        .sub => 6,
+        .concat => 6,
+        .mul => 7,
+        .div => 7,
+        .rem => 7,
+        _ => nil,
+    }
+}
+
+fn stage1_cmp_head(head) {
+    switch head {
+        .eq => true,
+        .ne => true,
+        .lt => true,
+        .le => true,
+        .gt => true,
+        .ge => true,
+        _ => false,
+    }
+}
+
+fn stage1_paren(text, own, req) {
+    if own < req {
+        "(" ++ text ++ ")"
+    } else {
+        text
+    }
+}
+
+fn stage1_some(x) { .some(x) }
+fn stage1_none() { .none }
+
+fn stage1_join_rendered(items, sep) {
+    var out = "";
+    var ok = true;
+    var i = 0;
+    while i < len(items) and ok {
+        let part = stage1_render_inline(items[i], 0);
+        switch part {
+            .some(text) => {
+                if i > 0 {
+                    out = out ++ sep;
+                }
+                out = out ++ text;
+            },
+            .none => { ok = false; },
+        }
+        i += 1;
+    }
+    if ok { .some(out) } else { .none }
+}
+
+fn stage1_render_fields(fields) {
+    var out = "";
+    var ok = true;
+    var i = 0;
+    while i < len(fields) and ok {
+        let part = stage1_render_inline(fields[i], 0);
+        switch part {
+            .some(text) => {
+                if i > 0 {
+                    out = out ++ ", ";
+                }
+                out = out ++ text;
+            },
+            .none => { ok = false; },
+        }
+        i += 1;
+    }
+    if ok { .some(out) } else { .none }
+}
+
+fn stage1_render_binop(head, parts, req) {
+    let op = stage1_binop_text(head);
+    let own = stage1_binop_prec(head);
+    if op == nil or own == nil or len(parts) != 2 {
+        return stage1_none();
+    }
+
+    let left_req = if stage1_cmp_head(head) { own + 1 } else { own };
+    let left = stage1_render_inline(parts[0], left_req);
+    let right = stage1_render_inline(parts[1], own + 1);
+
+    switch left {
+        .some(ls) => switch right {
+            .some(rs) => stage1_some(stage1_paren(ls ++ " " ++ op ++ " " ++ rs, own, req)),
+            .none => stage1_none(),
+        },
+        .none => stage1_none(),
+    }
+}
+
+fn stage1_render_inline(x, req) {
+    switch x {
+        .{ .head = h, .args = parts } => {
+            let op = stage1_binop_text(h);
+            if op != nil {
+                return stage1_render_binop(h, parts, req);
+            }
+
+            switch x {
+                .{ .head = .ident, .args = [name] } =>
+                    stage1_some(stage1_atom_name(name)),
+
+                .{ .head = .type_ident, .args = [name] } =>
+                    stage1_some(stage1_atom_name(name)),
+
+                .{ .head = .not, .args = [value] } => {
+                    let rendered = stage1_render_inline(value, 8);
+                    switch rendered {
+                        .some(text) => stage1_some(stage1_paren("!" ++ text, 8, req)),
+                        .none => stage1_none(),
+                    }
+                },
+
+                .{ .head = .neg, .args = [value] } => {
+                    let rendered = stage1_render_inline(value, 8);
+                    switch rendered {
+                        .some(text) => stage1_some(stage1_paren("-" ++ text, 8, req)),
+                        .none => stage1_none(),
+                    }
+                },
+
+                .{ .head = .call, .args = [callee, ...call_args] } => {
+                    let rendered_callee = stage1_render_inline(callee, 9);
+                    let rendered_args = stage1_join_rendered(call_args, ", ");
+                    switch rendered_callee {
+                        .some(callee_text) => switch rendered_args {
+                            .some(arg_text) =>
+                                stage1_some(stage1_paren(callee_text ++ "(" ++ arg_text ++ ")", 9, req)),
+                            .none => stage1_none(),
+                        },
+                        .none => stage1_none(),
+                    }
+                },
+
+                .{ .head = .index, .args = [object, index] } => {
+                    let rendered_object = stage1_render_inline(object, 9);
+                    let rendered_index = stage1_render_inline(index, 0);
+                    switch rendered_object {
+                        .some(object_text) => switch rendered_index {
+                            .some(index_text) =>
+                                stage1_some(stage1_paren(object_text ++ "[" ++ index_text ++ "]", 9, req)),
+                            .none => stage1_none(),
+                        },
+                        .none => stage1_none(),
+                    }
+                },
+
+                .{ .head = .field, .args = [object, name] } => {
+                    let rendered_object = stage1_render_inline(object, 9);
+                    switch rendered_object {
+                        .some(object_text) =>
+                            stage1_some(stage1_paren(object_text ++ "." ++ stage1_atom_name(name), 9, req)),
+                        .none => stage1_none(),
+                    }
+                },
+
+                .{ .head = .field_init, .args = [name, value] } => {
+                    let rendered = stage1_render_inline(value, 0);
+                    switch rendered {
+                        .some(text) => stage1_some("." ++ stage1_atom_name(name) ++ " = " ++ text),
+                        .none => stage1_none(),
+                    }
+                },
+
+                .{ .head = .tagged_lit, .args = [tag, ...values] } => {
+                    let rendered_values = stage1_join_rendered(values, ", ");
+                    switch rendered_values {
+                        .some(text) => stage1_some("." ++ stage1_atom_name(tag) ++ "(" ++ text ++ ")"),
+                        .none => stage1_none(),
+                    }
+                },
+
+                .{ .head = .list_lit, .args = values } => {
+                    let rendered_values = stage1_join_rendered(values, ", ");
+                    switch rendered_values {
+                        .some(text) => stage1_some("[" ++ text ++ "]"),
+                        .none => stage1_none(),
+                    }
+                },
+
+                .{ .head = .spread, .args = [value] } => {
+                    let rendered = stage1_render_inline(value, 0);
+                    switch rendered {
+                        .some(text) => stage1_some("..." ++ text),
+                        .none => stage1_none(),
+                    }
+                },
+
+                .{ .head = .record_lit, .args = fields } => {
+                    if len(fields) == 0 {
+                        stage1_some(".{}")
+                    } else {
+                        let rendered_fields = stage1_render_fields(fields);
+                        switch rendered_fields {
+                            .some(text) => stage1_some(".{ " ++ text ++ " }"),
+                            .none => stage1_none(),
+                        }
+                    }
+                },
+
+                .{ .head = .quote, .args = [.expr, value] } => {
+                    let rendered = stage1_render_inline(value, 0);
+                    switch rendered {
+                        .some(text) => stage1_some("quote { " ++ text ++ " }"),
+                        .none => stage1_none(),
+                    }
+                },
+
+                .{ .head = .unreachable, .args = [] } =>
+                    stage1_some("unreachable"),
+
+                .{ .head = .raw, .args = [value] } => {
+                    let rendered = stage1_render_inline(value, 0);
+                    switch rendered {
+                        .some(text) => stage1_some("raw(" ++ text ++ ")"),
+                        .none => stage1_none(),
+                    }
+                },
+
+                .{ .head = .inject, .args = [value] } => {
+                    let rendered = stage1_render_inline(value, 0);
+                    switch rendered {
+                        .some(text) => stage1_some("inject(" ++ text ++ ")"),
+                        .none => stage1_none(),
+                    }
+                },
+
+                .{ .head = .insert, .args = [value] } => {
+                    let rendered = stage1_render_inline(value, 0);
+                    switch rendered {
+                        .some(text) => stage1_some("insert(" ++ text ++ ")"),
+                        .none => stage1_none(),
+                    }
+                },
+
+                _ => stage1_none(),
+            }
+        },
+
+        _ => stage1_some(show(x)),
+    }
+}
+
+fn stage1_print_node(x) {
+    let rendered = stage1_render_inline(x, 0);
+    switch rendered {
+        .some(text) => text,
+        .none => print(x),
+    }
+}
