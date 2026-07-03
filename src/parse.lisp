@@ -273,6 +273,10 @@ template. The expander owns matching and template instantiation."
   (let* ((name-tok (p-expect p :ident "a macro name"))
          (name (make-ident (token-value name-tok) :meta (tok-meta p name-tok)))
          (params '()))
+    ;; register the name before the body parses: quoted self-invocations in
+    ;; the macro's own templates must collect as macro calls (the fixpoint
+    ;; driver re-expands them, exactly like by-example recursion §5.8.1)
+    (register-macro-signature (token-value name-tok) '() nil)
     (p-expect p :lparen "`(`")
     (unless (p-at p :rparen)
       (loop

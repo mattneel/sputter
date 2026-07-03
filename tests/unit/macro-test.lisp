@@ -257,3 +257,62 @@
                        }
                        m(4);"))))
       "kind ascriptions in macro bodies don't warn"))
+
+(deftest review-regressions
+  ;; sequence holes splice into list elements and call arguments
+  (ok (equal (eval-src
+              "macro listify {
+                   { listify { ...xs: expr } } => { [...xs] },
+               }
+               listify { 1, 2, 3 };")
+             '(1 2 3))
+      "sequence holes splice into list literals")
+  (ok (eql (eval-src
+            "macro call_with {
+                 { call_with { ...xs: expr } } => { sum([...xs]) + len([...xs]) },
+             }
+             call_with { 10, 20 };")
+           32)
+      "…and into call arguments")
+  ;; a sequence hole in a single-fragment position is a clear diagnostic,
+  ;; not `undefined name __sput_hole_...`
+  (expands-error
+   "macro bad {
+        { bad { ...xs: expr } } => { 1 + ...xs },
+    }
+    let y = bad { 1, 2 };")
+  ;; dump must not crash on macro-call payloads (token groups)
+  (let ((d (eval-src
+            "macro fn m(e: expr) expr { quote { e } }
+             dump(quote { m(1 + 2) });")))
+    (ok (search "[.m, \"1 + 2\"]" d)
+        "dump renders raw payloads as their source text"))
+  ;; macro fn self-reference: the name is registered before the body parses
+  (expands-error
+   "macro fn s(e: expr) expr { s(e) }
+    let x = s(1);")
+  (ok (handler-case
+          (progn (eval-src "macro fn s(e: expr) expr { quote { s(e) } }
+                            let x = s(1);")
+                 nil)
+        (s:sputter-expand-error (c)
+          (search "512 levels" (s:sputter-error-message c))))
+      "quoted self-invocation hits the fixpoint depth limit, not `undefined`")
+  ;; walking a quoted macro call passes its payload through untouched
+  (ok (equal (eval-src
+              "macro fn m(e: expr) expr { quote { e } }
+               print(prewalk(quote { m(1) + 2 }, fn(e) { e }));")
+             "m(1) + 2")
+      "prewalk treats token payloads as opaque")
+  ;; macro-call payloads re-serialize canonically
+  (s:reset-globals)
+  (let* ((src "macro pair {
+    { pair { a: expr => b: expr, ...rest: arm } } => { [a, b] },
+}
+let x = pair { 1 => 2, };
+")
+         (out (s:print-module (s:parse-module src :file "<fmt>"))))
+    (ok (search "{ pair { a: expr => b: expr, ...rest: arm } }" out)
+        "hole ascriptions print tight (name: kind, ...name: kind)")
+    (ok (search "pair { 1 => 2, }" out)
+        "call payloads keep canonical spacing")))

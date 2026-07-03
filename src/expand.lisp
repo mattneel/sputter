@@ -472,6 +472,7 @@ boundaries so a hole never captures half of a nested group."
              (mark (incf *mark-counter*))
              (marked (mark-template-tree parsed mark))
              (spliced (splice-template-sentinels marked sentinels mark)))
+        (assert-no-leaked-sentinels spliced call-node)
         (rename-template-binders spliced mark)))))
 
 (defun prepare-template-tokens (tokens bindings)
@@ -588,11 +589,49 @@ sequence arm holes stay raw so they can be spliced into token-groups."
      (splice-template-block x sentinels mark))
     ((eq (node-head x) :macro_call)
      (splice-template-macro-call x sentinels mark))
+    ;; sequence holes also splice element-wise into list literals and call
+    ;; arguments: `[...xs]`, `f(...xs)`
+    ((eq (node-head x) :list_lit)
+     (make-node :list_lit
+                (splice-template-elements (node-args x) sentinels mark)
+                :meta (node-meta x)))
+    ((eq (node-head x) :call)
+     (make-node :call
+                (cons (splice-template-sentinels (first (node-args x))
+                                                 sentinels mark)
+                      (splice-template-elements (rest (node-args x))
+                                                sentinels mark))
+                :meta (node-meta x)))
     (t (make-node (node-head x)
                   (mapcar (lambda (a)
                             (splice-template-sentinels a sentinels mark))
                           (node-args x))
                   :meta (node-meta x)))))
+
+(defun splice-template-elements (elems sentinels mark)
+  "Element positions that accept sequence splices: a sequence-hole sentinel
+expands in place; everything else splices normally."
+  (loop for e in elems
+        append (a:if-let ((binding (and (ident-node-p e)
+                                        (gethash (ident-name e) sentinels))))
+                 (if (macro-binding-sequence-p binding)
+                     (copy-list (macro-binding-value binding))
+                     (list (macro-binding-value binding)))
+                 (list (splice-template-sentinels e sentinels mark)))))
+
+(defun assert-no-leaked-sentinels (x call-node)
+  "A sequence hole spliced where only a single fragment fits leaves its
+sentinel behind — turn that into a real diagnostic, not `undefined name`."
+  (labels ((walk (e)
+             (when (node-p e)
+               (when (and (ident-node-p e)
+                          (a:starts-with-subseq "__sput_hole_"
+                                                (symbol-name (ident-name e))))
+                 (expand-error call-node
+                               "a `...` sequence hole was spliced where a single fragment is expected (sequence holes fit statement, arm, list-element, and call-argument positions in v0.1)"))
+               (dolist (a (node-args e)) (walk a)))))
+    (walk x))
+  x)
 
 (defun splice-template-block (block sentinels mark)
   (let* ((args (node-args block))

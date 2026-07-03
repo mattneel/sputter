@@ -294,8 +294,11 @@ around postfix `.name` and call/index openers."
              (write-string (token-text tok) out))))
 
 (defun token-space-between-p (prev tok)
-  (not (or (member (token-type tok) '(:comma :semi :rparen :rbracket :rbrace))
-           (member (token-type prev) '(:lparen :lbracket :dot-lbrace))
+  (not (or (member (token-type tok) '(:comma :semi :rparen :rbracket :colon))
+           ;; empty groups close tight ({}); otherwise } gets its space
+           (and (eq (token-type tok) :rbrace)
+                (member (token-type prev) '(:lbrace :dot-lbrace)))
+           (member (token-type prev) '(:lparen :lbracket :dot-lbrace :ellipsis))
            ;; postfix chains stay tight: x.y, f(x), xs[0]
            (and (eq (token-type tok) :dot-ident)
                 (member (token-type prev)

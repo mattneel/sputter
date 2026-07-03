@@ -752,12 +752,16 @@ one `|> stage` per line, indented one step (§10.1 layout)."
 
 (defun dump-string (x &optional (indent 0))
   (cond
+    ;; a macro-call payload has no data-literal form: dump its source text
+    ;; (round-trips through the reader as a string, honest about being raw)
+    ((token-group-p x)
+     (escape-string-literal (serialize-tokens (token-group-tokens x))))
     ((not (node-p x)) (literal-string x))
     ((every (lambda (a) (not (node-p a))) (node-args x))
      (format nil ".{ .head = .~a, .meta = ~a, .args = [~{~a~^, ~}] }"
              (string-downcase (symbol-name (node-head x)))
              (dump-meta-string (node-meta x))
-             (mapcar #'literal-string (node-args x))))
+             (mapcar (lambda (a) (dump-string a)) (node-args x))))
     (t
      (let* ((inner (+ indent +indent-step+))
             (pad (make-string inner :initial-element #\Space)))
@@ -805,6 +809,9 @@ one `|> stage` per line, indented one step (§10.1 layout)."
         ((node-p v)
          (format nil "<node ~(~a~)~@[ ~a~]>"
                  (node-head v) (meta-span-string (node-meta v))))
+        ((token-group-p v)
+         (format nil "<raw tokens ~a>"
+                 (serialize-tokens (token-group-tokens v))))
         (t "<host value>")))
 
 (defun show-function (f)

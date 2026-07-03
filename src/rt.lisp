@@ -440,27 +440,32 @@ the internal head keyword."
   (make-node (atom-head head) args))
 
 (defun sput-prewalk (x f)
-  "prewalk with runtime validation: F must return nodes or scalars."
-  (let ((y (funcall f x)))
-    (unless (or (node-p y) (scalarp y))
-      (rt-panic "prewalk fn returned ~a (nodes and scalars only)" (show-value y)))
-    (if (node-p y)
-        (make-node (node-head y)
-                   (mapcar (lambda (a) (sput-prewalk a f)) (node-args y))
-                   :meta (node-meta y))
-        y)))
+  "prewalk with runtime validation: F must return nodes or scalars.
+Macro-call token payloads are opaque — they pass through without visiting F."
+  (if (token-group-p x)
+      x
+      (let ((y (funcall f x)))
+        (unless (or (node-p y) (scalarp y))
+          (rt-panic "prewalk fn returned ~a (nodes and scalars only)" (show-value y)))
+        (if (node-p y)
+            (make-node (node-head y)
+                       (mapcar (lambda (a) (sput-prewalk a f)) (node-args y))
+                       :meta (node-meta y))
+            y))))
 
 (defun sput-postwalk (x f)
-  (let* ((walked (if (node-p x)
-                     (make-node (node-head x)
-                                (mapcar (lambda (a) (sput-postwalk a f))
-                                        (node-args x))
-                                :meta (node-meta x))
-                     x))
-         (y (funcall f walked)))
-    (unless (or (node-p y) (scalarp y))
-      (rt-panic "postwalk fn returned ~a (nodes and scalars only)" (show-value y)))
-    y))
+  (if (token-group-p x)
+      x
+      (let* ((walked (if (node-p x)
+                         (make-node (node-head x)
+                                    (mapcar (lambda (a) (sput-postwalk a f))
+                                            (node-args x))
+                                    :meta (node-meta x))
+                         x))
+             (y (funcall f walked)))
+        (unless (or (node-p y) (scalarp y))
+          (rt-panic "postwalk fn returned ~a (nodes and scalars only)" (show-value y)))
+        y)))
 
 (defun sput-print (x)
   "print(node) -> str: canonical surface syntax (SPEC §5.7)."
