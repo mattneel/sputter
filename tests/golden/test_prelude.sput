@@ -1,0 +1,11 @@
+test "prelude check and helpers" {
+    let xs = [1, 2] |> push(3);
+    check(len(xs) == 3);
+    check(sum(xs) == 6);
+    check(str(.ok(1)) == ".ok(1)");
+}
+
+test "closures in tests" {
+    let doubled = map([1, 2, 3], fn(x) { x * 2 });
+    check(doubled == [2, 4, 6]);
+}

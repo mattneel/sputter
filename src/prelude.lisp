@@ -15,6 +15,8 @@
     ("reduce" . sput-reduce)
     ("sum" . sput-sum)
     ("len" . sput-len)
+    ("push" . sput-push)
+    ("str" . sput-str)
     ;; nodes as values (SPEC §4.4, M4)
     ("head" . sput-head)
     ("args" . sput-args)
@@ -24,15 +26,43 @@
     ("postwalk" . sput-postwalk)
     ("print" . sput-print)
     ("dump" . sput-dump)
+    ;; internal target for the M7 `test` macro; the leading underscores keep
+    ;; it out of the documented prelude but it is still plain Sputter surface.
+    ("__sput_register_test" . sput-register-test)
     ;; comptime ident builders (SPEC §5.8.3)
     ("concat_ident" . sput-concat-ident)
     ("gensym_ident" . sput-gensym-ident))
   "Sputter name -> implementation symbol. Every entry is a function (values,
 not macros — the cl. bridge and the prelude are functions-only, SPEC §7).")
 
+(defparameter +prelude-macro-sources+
+  (list
+   "macro fn check(cond: expr) expr {
+    let text = print(cond);
+    quote {
+        if !cond {
+            panic(\"check failed: \" ++ text)
+        }
+    }
+}
+"
+   "macro test {
+    { test name: literal { ...body: stmt } } =>
+        { __sput_register_test(name, fn() { ...body }) },
+}
+")
+  "Prelude macros are written in Sputter surface syntax, then installed into
+the stage-0 registry on each fresh session (M7 dogfood).")
+
 (defun register-prelude ()
   (loop for (name . sym) in +prelude-builtins+
-        do (register-global-fn (name-keyword name) sym)))
+        do (register-global-fn (name-keyword name) sym))
+  (register-prelude-macros))
+
+(defun register-prelude-macros ()
+  (dolist (src +prelude-macro-sources+)
+    (dolist (form (parse-module src :file "<prelude>"))
+      (eval-top-form form))))
 
 (defun reset-globals ()
   "Fresh image state for a run/repl session (SPEC §9). Stale DEFUNs from a
@@ -41,6 +71,7 @@ resolves names through *globals* only."
   (clrhash *globals*)
   (clrhash *global-values*)
   (clrhash *span-table*)
+  (reset-registered-tests)
   (reset-macros)
   (register-prelude))
 

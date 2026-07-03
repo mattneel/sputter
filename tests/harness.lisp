@@ -24,7 +24,8 @@
   (list (cons "expand" (lambda (f) (list "expand" (file-namestring f))))
         (cons "dump" (lambda (f) (list "expand" "--dump" (file-namestring f))))
         (cons "fmt" (lambda (f) (list "fmt" (file-namestring f))))
-        (cons "run" (lambda (f) (list "run" (file-namestring f))))))
+        (cons "run" (lambda (f) (list "run" (file-namestring f))))
+        (cons "test" (lambda (f) (list "test" (file-namestring f))))))
 
 (defun golden-dir ()
   (asdf:system-relative-pathname :sputter "tests/golden/"))

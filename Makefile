@@ -1,7 +1,7 @@
 SBCL ?= sbcl
 QL_SETUP := $(HOME)/quicklisp/setup.lisp
 
-.PHONY: test golden-update clean
+.PHONY: test golden-update build-image clean
 
 test:
 	$(SBCL) --noinform --non-interactive \
@@ -14,5 +14,9 @@ test:
 golden-update:
 	SPUTTER_GOLDEN=update $(MAKE) test
 
+build-image:
+	bin/sput build-image
+
 clean:
 	find . -name '*.fasl' -delete
+	rm -f bin/sput.image

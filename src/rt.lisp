@@ -304,6 +304,16 @@ provenance, not identity). Returns a CL generalized boolean; sput-eq wraps."
         (t (rt-panic "len wants a list, string, record, or tagged value, got ~a"
                      (show-value x)))))
 
+(defun sput-push (xs x)
+  "Persistent list append for pipeline-friendly code: `xs |> push(x)`."
+  (sput-check-listy "push" xs)
+  (append xs (list x)))
+
+(defun sput-str (x)
+  "Runtime string conversion. Strings are already strings; other values use
+the same Sputter literal renderer as `show`."
+  (if (stringp x) x (show-value x)))
+
 (defun sput-check-listy (who xs)
   (unless (listp xs)
     (rt-panic "~a wants a list, got ~a" who (show-value xs))))
@@ -466,6 +476,26 @@ the internal head keyword."
                (rt-panic "index ~d is out of bounds for a list of ~d" i len))))
         ((listp obj) (rt-panic "list indexes must be integers, got ~a" (show-value i)))
         (t (rt-panic "cannot index into ~a" (show-value obj)))))
+
+;;; --- test registry (M7 prelude macro target) -----------------------------------
+
+(defvar *registered-tests* '()
+  "A fresh `sput test` session collects (name . thunk) pairs here.")
+
+(defun reset-registered-tests ()
+  (setf *registered-tests* '()))
+
+(defun registered-tests ()
+  (nreverse *registered-tests*))
+
+(defun sput-register-test (name thunk)
+  "Runtime target for the prelude `test` macro."
+  (unless (stringp name)
+    (rt-panic "test name must be a string, got ~a" (show-value name)))
+  (unless (functionp thunk)
+    (rt-panic "test body did not compile to a thunk"))
+  (push (cons name thunk) *registered-tests*)
+  nil)
 
 ;;; --- user-facing builtins (registered by the prelude) --------------------------
 

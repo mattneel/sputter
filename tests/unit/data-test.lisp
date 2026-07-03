@@ -172,5 +172,8 @@
   (ok (eql (eval-src "len(\"hello\");") 5))
   (ok (eql (eval-src "len(.{ .a = 1 });") 1))
   (ok (equal (eval-src "reduce([1, 2, 3], 10, fn(acc, x) { acc + x });") 16))
+  (ok (equal (eval-src "push([1, 2], 3);") '(1 2 3)))
+  (ok (equal (eval-src "str(.ok(1));") ".ok(1)"))
+  (ok (equal (eval-src "str(\"already\");") "already"))
   (panics "sum([1, \"a\"]);")
   (panics "map(42, fn(x) { x });" "map wants a list"))

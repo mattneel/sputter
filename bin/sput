@@ -1,7 +1,11 @@
 #!/bin/sh
 # sput — Sputter CLI launcher (SPEC §9).
-# M0: an `sbcl --script` shim. `sput build-image` (M7) will save an image
-# next to this script and this shim will prefer it.
+# Prefer the M7 saved core when present; otherwise fall back to the portable
+# M0 `sbcl --script` path.
 SPUTTER_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 export SPUTTER_ROOT
+SPUTTER_IMAGE="$SPUTTER_ROOT/bin/sput.image"
+if [ -f "$SPUTTER_IMAGE" ]; then
+  exec sbcl --core "$SPUTTER_IMAGE" -- "$@"
+fi
 exec sbcl --script "$SPUTTER_ROOT/src/boot.lisp" "$@"

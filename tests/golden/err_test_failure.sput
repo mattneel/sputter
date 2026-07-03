@@ -1,0 +1,3 @@
+test "failing check" {
+    check(1 == 2);
+}

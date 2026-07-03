@@ -43,8 +43,8 @@ make test          # rove suites + golden corpus
 bin/sput help
 ```
 
-`bin/sput` is an `sbcl --script` shim for now; a saved image arrives with
-`sput build-image`.
+`bin/sput` uses `bin/sput.image` when present, and otherwise falls back to
+`sbcl --script src/boot.lisp`. Build the saved image with `sput build-image`.
 
 ## CLI
 
@@ -55,11 +55,42 @@ sput expand --dump file.sput  same, as data literals
 sput fmt file.sput            parse + print canonically (--check for CI)
 sput repl                     REPL (line editing: rlwrap sput repl)
 sput test file.sput...        run `test "name" { ... }` blocks
+sput build-image [path]       save a preloaded SBCL core (default: bin/sput.image)
 ```
 
 `sput expand` is the flagship: its output is a valid `.sput` module — macros
 fully expanded, printed back as surface syntax. No s-expression ever crosses
 the user-facing line (the *Waterline*).
+
+## Quick tour
+
+Run the normative tour from SPEC.md §10:
+
+```sh
+bin/sput run examples/tour.sput
+bin/sput fmt --check examples/tour.sput
+```
+
+Write tests in Sputter itself:
+
+```zig
+test "lists and checks" {
+    let xs = [1, 2] |> push(3);
+    check(len(xs) == 3);
+    check(str(.ok(1)) == ".ok(1)");
+}
+```
+
+```sh
+bin/sput test tests/golden/test_prelude.sput
+```
+
+For faster startup, build and use a saved SBCL image:
+
+```sh
+bin/sput build-image          # writes bin/sput.image
+bin/sput help                 # automatically uses it
+```
 
 ## Status
 
@@ -72,7 +103,7 @@ Working through the v0.1 milestones (SPEC.md §11):
 - [x] M4 — nodes as first-class values (`quote`, `dump`, `print`)
 - [x] M5 — procedural macros (`macro fn`), hygiene
 - [x] M6 — by-example macros (`macro name { pattern => template }`)
-- [ ] M7 — prelude, `sput test`, polish
+- [x] M7 — prelude, `sput test`, polish
 - [ ] M8 — stage-1 beachhead: the printer, self-hosted in Sputter
 
 ## Repo map

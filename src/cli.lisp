@@ -16,6 +16,7 @@ commands:
   fmt file.sput        parse + print canonically (--check for CI)
   repl                 interactive session (tip: rlwrap sput repl)
   test file.sput...    run `test \"name\" { ... }` blocks, report pass/fail
+  build-image [path]   save a preloaded SBCL core (default: bin/sput.image)
   help                 show this message
 ")
 
@@ -175,6 +176,87 @@ Returns true when handled; anything unrecognized is an implementation bug."
         (format *standard-output* "~a~%" (show-value last))))
     0))
 
+;;; --- test runner (SPEC §9, M7) ----------------------------------------------------
+
+(defun render-condition-text (condition)
+  (with-output-to-string (s)
+    (cond
+      ((typep condition 'sputter-error)
+       (render-sputter-error condition s))
+      ((typep condition 'storage-condition)
+       (format s "error: the host ran out of stack or memory processing this input~%"))
+      (t
+       (unless (render-host-condition condition s)
+         (format s "error: internal error in the sput toolchain (this is a bug)~%"))))))
+
+(defun write-indented-lines (text &optional (stream *standard-output*))
+  (dolist (line (uiop:split-string text :separator '(#\Newline)))
+    (unless (string= line "")
+      (format stream "  ~a~%" line))))
+
+(defun run-one-registered-test (name thunk)
+  "Run one collected test thunk. Returns true on pass, false on failure."
+  (handler-case
+      (progn
+        (funcall thunk)
+        (format *standard-output* "ok - ~a~%" name)
+        t)
+    (sputter-error (c)
+      (format *standard-output* "not ok - ~a~%" name)
+      (write-indented-lines (render-condition-text c))
+      nil)
+    (storage-condition (c)
+      (format *standard-output* "not ok - ~a~%" name)
+      (write-indented-lines (render-condition-text c))
+      nil)
+    (error (c)
+      (format *standard-output* "not ok - ~a~%" name)
+      (write-indented-lines (render-condition-text c))
+      nil)))
+
+(defun cmd-test (args)
+  (let ((flags (remove-if-not #'flag-p args))
+        (files (remove-if #'flag-p args)))
+    (check-flags flags '() "test")
+    (when (null files)
+      (error 'sputter-error :message "`sput test` needs at least one file"))
+    (reset-globals)
+    ;; Loading files registers test thunks via the prelude `test` macro.
+    (dolist (f files)
+      (run-file f))
+    (let ((tests (registered-tests))
+          (passed 0)
+          (failed 0))
+      (dolist (test tests)
+        (destructuring-bind (name . thunk) test
+          (if (run-one-registered-test name thunk)
+              (incf passed)
+              (incf failed))))
+      (format *standard-output* "~d test~:p, ~d passed, ~d failed~%"
+              (+ passed failed) passed failed)
+      (if (zerop failed) 0 1))))
+
+;;; --- build-image (SPEC §9, M7) ----------------------------------------------------
+
+(defun default-image-path ()
+  (let ((root (or (host-getenv "SPUTTER_ROOT")
+                  (namestring (uiop:getcwd)))))
+    (uiop:native-namestring
+     (merge-pathnames "bin/sput.image"
+                      (uiop:ensure-directory-pathname root)))))
+
+(defun cmd-build-image (args)
+  (let ((flags (remove-if-not #'flag-p args))
+        (files (remove-if #'flag-p args)))
+    (check-flags flags '() "build-image")
+    (when (> (length files) 1)
+      (error 'sputter-error :message "`sput build-image` takes at most one output path"))
+    (let ((path (or (first files) (default-image-path))))
+      (format *standard-output* "saving image: ~a~%" path)
+      (finish-output *standard-output*)
+      (host-save-image path)
+      0)))
+
 ;;; --- repl (SPEC §9) ---------------------------------------------------------------
 
 (defun repl-entry-complete-p (src)
@@ -262,9 +344,9 @@ Everything written here is user-facing: Sputter prose only (I2)."
       ((string= command "repl")
        (with-error-boundary () (cmd-repl (rest argv))))
       ((string= command "test")
-       (format *error-output*
-               "error: `sput test` is not implemented yet (it arrives with M7)~%")
-       1)
+       (with-error-boundary () (cmd-test (rest argv))))
+      ((string= command "build-image")
+       (with-error-boundary () (cmd-build-image (rest argv))))
       (t
        (format *error-output* "error: unknown command `~a`~%~%" command)
        (write-string +usage+ *error-output*)

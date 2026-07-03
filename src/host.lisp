@@ -15,13 +15,22 @@
 
 (defun host-argv ()
   "Command-line arguments handed to the sput CLI (program/script name excluded)."
-  (rest sb-ext:*posix-argv*))
+  (let ((args (rest sb-ext:*posix-argv*)))
+    ;; Saved images are launched as `sbcl --core sput.image -- ...`; the
+    ;; separator is host ceremony, not a Sputter argument.
+    (if (and args (string= (first args) "--"))
+        (rest args)
+        args)))
 
 (defun host-getenv (name)
   (sb-ext:posix-getenv name))
 
 (defun host-exit (code)
   (sb-ext:exit :code code :abort nil))
+
+(defun host-save-image (path)
+  "Save the already-loaded toolchain as an SBCL core and exit."
+  (sb-ext:save-lisp-and-die path :toplevel #'cli-main :executable nil))
 
 (defun host-print-backtrace (condition stream)
   "Raw host condition + backtrace, for SPUTTER_HOST_BACKTRACE=1 only (SPEC §8)."

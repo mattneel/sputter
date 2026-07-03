@@ -1,0 +1,48 @@
+macro unless {
+    { unless cond: expr { ...body: stmt } } =>
+        { if !(cond) { ...body } },
+
+    { unless cond: expr { ...body: stmt } else { ...alt: stmt } } =>
+        { if !(cond) { ...body } else { ...alt } },
+}
+
+fn fetch(id) {
+    if id == 1 {
+        .ok(.{ .name = "amy" })
+    } else {
+        .err(.not_found)
+    }
+}
+
+let orders = [
+    .{ .amount = 10, .paid = true },
+    .{ .amount = 7, .paid = false },
+    .{ .amount = 5, .paid = true },
+];
+
+let paid = orders
+    |> filter(fn(o) { o.paid })
+    |> map(fn(o) { o.amount });
+
+println(sum(paid));
+println(push(paid, 99));
+
+let greeting = switch fetch(1) {
+    .ok(profile) => "hi " ++ profile.name,
+    .err(.not_found) => "missing",
+    .err(reason) => str(reason),
+};
+println(greeting);
+
+let kind = switch quote { greet("amy") } {
+    .{ .head = .call } => "call",
+    _ => "other",
+};
+println(kind);
+println(print(quote { 1 + 2 * 3 }));
+
+unless false {
+    println("unless-body");
+} else {
+    println("unless-else");
+}
