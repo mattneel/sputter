@@ -1,0 +1,2 @@
+error: macro `only_empty` matched no by-example arm (1 arm tried)
+  at err_macro_no_arm.sput:5:1

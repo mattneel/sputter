@@ -135,8 +135,8 @@
                        (n :add (n :if (i "a") (n :block 1) (n :block 2)) 1)))
       "expression-position if does continue into operators"))
 
-(deftest future-syntax-is-a-clean-error
-  (parse-fails "macro m { }"))
+(deftest macro-syntax-errors-are-clean
+  (parse-fails "macro m { { m } }"))
 
 (deftest review-regressions
   ;; the Rust `;` rule on }-terminated statements (M1 review, SPEC §5.4)

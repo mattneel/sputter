@@ -253,7 +253,7 @@ bindings extend the environment for the statements that follow."
                              (pl :p.assign node (list name-kw :local p-fn)))
                        new-env))
              (values (list (lower-expr node env)) env)))
-        (:macro_fn_def
+        ((:macro_fn_def :macro_def)
          (lower-error node "macro definitions are top-level forms (SPEC §5.2)"))
         (t (values (list (lower-stmt node env)) env)))))
 
@@ -383,9 +383,9 @@ bindings extend the environment for the statements that follow."
            (:quote (lower-quote node env))
            ((:let :var :assign :op_assign :return)
             (lower-error node "~(~a~) is a statement, not an expression" head))
-           (:macro_fn_def
+           ((:macro_fn_def :macro_def)
             (lower-error node "macro definitions are top-level forms (SPEC §5.2)"))
-           ((:macro_call :raw :inject :insert :hole :splice_seq)
+           ((:macro_call :macro_arm :raw :inject :insert :hole :splice_seq)
             (assert nil (node)
                     "macro-space head ~a reached the lowerer outside a quote" head))
            (t (assert nil (node)

@@ -19,7 +19,8 @@
   "Parse+expand SRC from clean state, dropping consumed macro definitions."
   (s:reset-globals)
   (remove-if (lambda (form)
-               (and (s:node-p form) (eq (s:node-head form) :macro_fn_def)))
+               (and (s:node-p form)
+                    (member (s:node-head form) '(:macro_fn_def :macro_def))))
              (s:expand-module (s:parse-module src :file "<macro-test>"))))
 
 (defun expand-print (src)
@@ -143,3 +144,83 @@
   (expands-error
    "macro fn one(x: expr) expr { quote { x } }
     one();"))
+
+(defparameter +by-example-macros+
+  "macro cond {
+       { cond { } } =>
+           { unreachable },
+
+       { cond { c: expr => body: expr, ...rest: arm } } =>
+           { if c { body } else { cond { ...rest } } },
+   }
+
+   macro unless {
+       { unless cond: expr { ...body: stmt } } =>
+           { if !(cond) { ...body } },
+
+       { unless cond: expr { ...body: stmt } else { ...alt: stmt } } =>
+           { if !(cond) { ...body } else { ...alt } },
+   }
+")
+
+(deftest by-example-parse-shapes
+  (s:reset-globals)
+  (let* ((forms (s:parse-module
+                 (concatenate 'string +by-example-macros+
+                              "let grade = cond { true => .a };")
+                 :file "<macro-test>"))
+         (def (first forms))
+         (call (third forms)))
+    (ok (eq (s:node-head def) :macro_def)
+        "by-example macro defs get their own head")
+    (ok (= 2 (length (rest (s:node-args def))))
+        "macro arms are retained as raw pattern/template pairs")
+    (ok (eq (s:node-head call) :let))
+    (let ((macro-call (third (s:node-args call))))
+      (ok (eq (s:node-head macro-call) :macro_call)
+          "known by-example macro invocations claim their raw extent")
+      (ok (eq (third (s:node-args macro-call)) :by-example)
+          "by-example calls are distinguished from macro-fn calls"))))
+
+(deftest by-example-cond-and-unless
+  (ok (equal (expand-print
+             (concatenate
+              'string +by-example-macros+
+              "let score = 81;
+                let grade = cond {
+                    score >= 90 => .a,
+                    score >= 80 => .b,
+                    true => .f,
+                };"))
+             (format nil
+                     "let score = 81;~%let grade = if score >= 90 {~%    .a~%} else {~%    if score >= 80 { .b } else { if true { .f } else { unreachable } }~%};~%"))
+      "cond expands recursively to a fixpoint and the empty rest arm is unreachable")
+  (ok (equal (eval-src
+              (concatenate
+               'string +by-example-macros+
+               "var seen = \"\";
+                unless false {
+                    seen = seen ++ \"body\";
+                } else {
+                    seen = seen ++ \"else\";
+                }
+                seen;"))
+             "body")
+      "unless claims the trailing else as part of the same macro invocation")
+  (ok (eql (eval-src
+            (concatenate
+             'string +by-example-macros+
+             "let x = 7;
+              cond {
+                  false => 0,
+                  true => x,
+              };"))
+           7)
+      "recursive rest arms preserve call-site bindings"))
+
+(deftest by-example-no-arm-diagnostic
+  (expands-error
+   "macro only_empty {
+        { only_empty { } } => { 0 },
+    }
+    only_empty { 1 };"))

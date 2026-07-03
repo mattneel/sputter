@@ -134,13 +134,10 @@ Returns true when handled; anything unrecognized is an implementation bug."
     (let* ((expanded (expand-module (parse-file (first files))))
            (dump (member "--dump" flags :test #'string=))
            (has-macro-def
-             (some (lambda (form)
-                     (and (node-p form) (eq (node-head form) :macro_fn_def)))
-                   expanded))
+             (some #'macro-def-node-p expanded))
            (chunks
              (mapcar (lambda (form)
-                       (if (and (node-p form)
-                                (eq (node-head form) :macro_fn_def))
+                       (if (macro-def-node-p form)
                            ;; §9: macro definitions print as comments noting
                            ;; they were consumed
                            (format nil "// macro `~a` consumed by expansion~%"
@@ -160,6 +157,9 @@ Returns true when handled; anything unrecognized is an implementation bug."
               ;; source-driven blank-line preservation remains intact.
               (write-string (print-module expanded) *standard-output*))))
     0))
+
+(defun macro-def-node-p (form)
+  (and (node-p form) (member (node-head form) '(:macro_fn_def :macro_def))))
 
 (defun cmd-run (args)
   (let ((flags (remove-if-not #'flag-p args))

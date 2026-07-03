@@ -67,7 +67,7 @@ parser folds `-1` back into the scalar, so this round-trips)."
 (defun binop-info (head) (assoc head +binop-info+))
 
 (defparameter +brace-stmt-heads+
-  '(:if :while :block :fn :switch :for_in :macro_fn_def)
+  '(:if :while :block :fn :switch :for_in :macro_fn_def :macro_def)
   "Heads whose statement form is }-terminated and takes no trailing `;`.")
 
 (defparameter +stmt-only-heads+ '(:let :var :assign :op_assign :return))
@@ -181,9 +181,12 @@ bracketed argument positions) makes the text unparseable without parens."
               (concatenate 'string "..." s)))
            (:unreachable "unreachable")
            (:quote (render-quote-inline x))
-           (:macro_call
-            (format nil "~a(~a)" (symbol-name (first args))
-                    (serialize-tokens (token-group-tokens (second args)))))
+	           (:macro_call
+	            (destructuring-bind (name payload &optional style) args
+	              (if (eq style :by-example)
+	                  (serialize-tokens (token-group-tokens payload))
+	                  (format nil "~a(~a)" (symbol-name name)
+	                          (serialize-tokens (token-group-tokens payload))))))
            ((:raw :inject :insert)
             (a:when-let ((s (render-expr (first args) 0)))
               (format nil "~(~a~)(~a)" head s)))
@@ -384,7 +387,7 @@ or NIL when it must break (named fn defs are always multiline, canonically)."
          (if (first (node-args node))
              nil                        ; named fn defs always break
              (render-expr node 0)))     ; lambda as expression statement
-        (:macro_fn_def nil)             ; macro defs always break
+	        ((:macro_fn_def :macro_def) nil) ; macro defs always break
         ((:if :while :block :for_in :switch) (render-expr node 0))
         (t (a:when-let ((s (render-expr node 0)))
              (concatenate 'string
@@ -416,6 +419,7 @@ or NIL when it must break (named fn defs are always multiline, canonically)."
 (defun emit-stmt-broken (stream node indent suffix)
   (case (node-head node)
     ((:fn :macro_fn_def) (emit-fn stream node indent "" suffix))
+    (:macro_def (emit-by-example-macro stream node indent suffix))
     (:if (emit-if-chain stream node indent "" suffix))
     ((:while :for_in) (emit-value-broken stream "" node suffix indent))
     (:block (emit-value-broken stream "" node suffix indent))
@@ -563,6 +567,18 @@ multiline form; otherwise one (possibly long) inline line — never a crash."
     (emit-block-body stream body (+ indent +indent-step+))
     (out-line stream indent (concatenate 'string "}" suffix))))
 
+(defun emit-by-example-macro (stream node indent suffix)
+  (destructuring-bind (name . arms) (node-args node)
+    (out-line stream indent
+              (format nil "macro ~a {" (render-binder-name name)))
+    (dolist (arm arms)
+      (destructuring-bind (pattern template) (node-args arm)
+        (out-line stream (+ indent +indent-step+)
+                  (format nil "{ ~a } => { ~a },"
+                          (serialize-tokens (token-group-tokens pattern))
+                          (serialize-tokens (token-group-tokens template))))))
+    (out-line stream indent (concatenate 'string "}" suffix))))
+
 (defun emit-switch (stream node indent prefix suffix)
   "Canonical switch: one arm per line; expression arms carry trailing
 commas, }-terminated arms none (§5.6 comma rule, §5.7 layout)."
@@ -691,7 +707,7 @@ one `|> stage` per line, indented one step (§10.1 layout)."
 
 (defun named-def-p (x)
   (and (node-p x)
-       (member (node-head x) '(:fn :macro_fn_def))
+       (member (node-head x) '(:fn :macro_fn_def :macro_def))
        (first (node-args x))))
 
 (defun print-module (stmts)

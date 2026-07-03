@@ -254,25 +254,29 @@ with at-least those fields, lists exactly (or with a ...tail)."
 
 ;;; --- the pipeline driver (SPEC §3.2) -----------------------------------------------
 
-(declaim (ftype function expand-node install-macro-fn expand-macro-def-body
-                assert-no-macro-space)) ; expand.lisp loads after this file
+(declaim (ftype function expand-node install-macro-fn install-by-example-macro
+                expand-macro-def-body assert-no-macro-space)) ; expand.lisp loads after this file
 
 (defun eval-top-form (node)
   "One top-level form through the whole pipeline:
 EXPAND → LOWER → validate → EMIT → HOST eval. Returns the runtime value.
 Macro definitions compile and install at this point (SPEC §3.1) — the live
 image is the staging evaluator."
-  (if (and (node-p node) (eq (node-head node) :macro_fn_def))
-      (install-macro-fn (expand-macro-def-body node))
-      (let ((expanded (expand-node node))
-            (value nil))
-        (assert-no-macro-space expanded "the lowerer")
-        (dolist (p (lower-top-form expanded) value)
-          (validate-plasma p)
-          (setf value (host-eval (emit-top-form p)))
-          ;; echo-friendly values for defs
-          (when (and (eq (node-head p) :p.fn) (first (node-args p)))
-            (setf value (symbol-function (mangle (first (node-args p))))))))))
+  (cond
+    ((and (node-p node) (eq (node-head node) :macro_fn_def))
+     (install-macro-fn (expand-macro-def-body node)))
+    ((and (node-p node) (eq (node-head node) :macro_def))
+     (install-by-example-macro node))
+    (t
+     (let ((expanded (expand-node node))
+           (value nil))
+       (assert-no-macro-space expanded "the lowerer")
+       (dolist (p (lower-top-form expanded) value)
+         (validate-plasma p)
+         (setf value (host-eval (emit-top-form p)))
+         ;; echo-friendly values for defs
+         (when (and (eq (node-head p) :p.fn) (first (node-args p)))
+           (setf value (symbol-function (mangle (first (node-args p)))))))))))
 
 (defun run-file (path)
   "Compile + execute one .sput file in the current image state.

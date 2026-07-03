@@ -1,0 +1,37 @@
+macro cond {
+    { cond { } } =>
+        { unreachable },
+
+    { cond { c: expr => body: expr, ...rest: arm } } =>
+        { if c { body } else { cond { ...rest } } },
+}
+
+macro unless {
+    { unless cond: expr { ...body: stmt } } =>
+        { if !(cond) { ...body } },
+
+    { unless cond: expr { ...body: stmt } else { ...alt: stmt } } =>
+        { if !(cond) { ...body } else { ...alt } },
+}
+
+let score = 81;
+let grade = cond {
+    score >= 90 => .a,
+    score >= 80 => .b,
+    true => .f,
+};
+println(grade);
+
+var seen = "";
+unless false {
+    seen = seen ++ "body";
+} else {
+    seen = seen ++ "else";
+}
+println(seen);
+
+let x = 7;
+println(cond {
+    false => 0,
+    true => x,
+});

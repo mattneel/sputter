@@ -1,0 +1,5 @@
+macro only_empty {
+    { only_empty { } } => { 0 },
+}
+
+only_empty { 1 };

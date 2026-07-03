@@ -124,14 +124,19 @@
                           (h:golden-source-files))))
     (ok (plusp (length files)) "corpus has non-error files")
     (dolist (src-file files)
+      ;; Each corpus file is an independent module/CLI invocation. Macro
+      ;; signatures are parse-time state, so keep this property test from
+      ;; leaking one file's macro names into the next.
+      (s:reset-globals)
       (let* ((src (uiop:read-file-string src-file))
              (m1 (s:parse-module src :file (file-namestring src-file)))
-             (out1 (s:print-module m1))
-             (m2 (s:parse-module out1 :file "<printed>"))
-             (out2 (s:print-module m2)))
-        (ok (and (= (length m1) (length m2))
-                 (every #'s:node-equal m1 m2))
-            (format nil "~a: parse ∘ print preserves the tree"
-                    (file-namestring src-file)))
-        (ok (string= out1 out2)
-            (format nil "~a: print is a fixpoint" (file-namestring src-file)))))))
+             (out1 (s:print-module m1)))
+        (s:reset-globals)
+        (let* ((m2 (s:parse-module out1 :file "<printed>"))
+               (out2 (s:print-module m2)))
+          (ok (and (= (length m1) (length m2))
+                   (every #'s:node-equal m1 m2))
+              (format nil "~a: parse ∘ print preserves the tree"
+                      (file-namestring src-file)))
+          (ok (string= out1 out2)
+              (format nil "~a: print is a fixpoint" (file-namestring src-file))))))))

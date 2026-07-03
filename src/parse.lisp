@@ -42,7 +42,9 @@ there) raw(x)/inject(x)/insert(e) are the template escapes (SPEC §5.8.3).")
 ;; The macro registry lives in expand.lisp (loaded later); the parser only
 ;; asks 'is this name a macro?' and registers signatures at definition sites.
 (declaim (ftype (function (keyword) t) macro-name-p)
-         (ftype (function (keyword list t) t) register-macro-signature))
+         (ftype (function (keyword) t) macro-by-example-name-p)
+         (ftype (function (keyword list t) t) register-macro-signature)
+         (ftype (function (keyword list) t) register-by-example-macro))
 
 ;;; --- token cursor -------------------------------------------------------------
 
@@ -208,10 +210,62 @@ inject(x)/raw(x) (anaphoric/literal binders, SPEC §5.8.3)."
   (let ((macro-tok (p-next p)))          ; `macro`
     (cond
       ((p-at-kw p :fn) (parse-macro-fn p macro-tok))
-      ((p-at p :ident)
-       (parse-error-at p (p-peek p)
-                       "by-example `macro name { ... }` arrives with M6; not supported yet"))
+      ((p-at p :ident) (parse-by-example-macro p macro-tok))
       (t (parse-error-at p (p-peek p) "expected `fn` or a macro name after `macro`")))))
+
+(defun parse-by-example-macro (p macro-tok)
+  "`macro name { { pattern } => { template }, ... }` (SPEC §5.8.1, M6).
+Both sides are raw token groups: LHS is an implicit pattern, RHS an implicit
+template. The expander owns matching and template instantiation."
+  (let* ((name-tok (p-expect p :ident "a macro name"))
+         (name (make-ident (token-value name-tok) :meta (tok-meta p name-tok)))
+         (arms '()))
+    (p-expect p :lbrace "`{`")
+    (unless (p-at p :rbrace)
+      (loop
+        (let* ((arm-meta (tok-meta p (p-peek p)))
+               (pattern (collect-brace-token-group p "a by-example macro pattern"))
+               (template (progn
+                           (p-expect p :fat-arrow "`=>`")
+                           (collect-brace-token-group
+                            p "a by-example macro template"))))
+          (push (make-node :macro_arm (list pattern template) :meta arm-meta)
+                arms))
+        (cond ((p-at p :comma)
+               (p-next p)
+               (when (p-at p :rbrace) (return)))
+              ((p-at p :rbrace) (return))
+              (t (parse-error-at p (p-peek p)
+                                 "expected `,` after by-example macro arm, got ~a"
+                                 (token-describe (p-peek p)))))))
+    (p-expect p :rbrace "`}`")
+    (let ((node (make-node :macro_def (cons name (nreverse arms))
+                           :meta (tok-meta p macro-tok))))
+      ;; Define-before-use: later forms in this parse can recognize the macro's
+      ;; non-parenthesized invocation extent.
+      (register-by-example-macro (ident-name name) (rest (node-args node)))
+      node)))
+
+(defun collect-brace-token-group (p what)
+  "Consume a balanced `{ ... }` group and return its interior tokens."
+  (unless (p-at p :lbrace)
+    (parse-error-at p (p-peek p) "expected `{` starting ~a, got ~a"
+                    what (token-describe (p-peek p))))
+  (p-next p)
+  (let ((start (parser-index p))
+        (depth 1))
+    (loop
+      (let ((tok (p-peek p)))
+        (case (token-type tok)
+          (:eof (parse-error-at p tok "unterminated ~a" what))
+          ((:lparen :lbracket :lbrace :dot-lbrace) (incf depth))
+          ((:rparen :rbracket :rbrace)
+           (when (and (eq (token-type tok) :rbrace) (= depth 1))
+             (p-next p)
+             (return (make-token-group
+                      (subseq (parser-tokens p) start (1- (parser-index p))))))
+           (decf depth))))
+      (p-next p))))
 
 (defun parse-macro-fn (p macro-tok)
   "`macro fn name(a: kind, b: kind) retkind { body }` (SPEC §5.8.4)."
@@ -342,7 +396,8 @@ expression when the block ends without `;`, else a synthesized scalar nil."
 assignments, macro defs, and named fn defs are not values."
   (and (node-p node)
        (not (member (node-head node)
-                    '(:let :var :assign :op_assign :return :macro_fn_def)))
+                    '(:let :var :assign :op_assign :return
+                      :macro_fn_def :macro_def)))
        (not (and (eq (node-head node) :fn)
                  (first (node-args node))))))
 
@@ -715,6 +770,69 @@ token-group (the raw macro-call payload, SPEC §5.8.6)."
            (decf depth))))
       (p-next p))))
 
+(defun collect-balanced-surface-group (p what)
+  "Consume one balanced surface group at point (`(...)`, `[...]`, `{...}`, or
+`.{...}`). Used by M6's enforestation-lite extent collector."
+  (unless (member (token-type (p-peek p))
+                  '(:lparen :lbracket :lbrace :dot-lbrace))
+    (parse-error-at p (p-peek p) "expected a delimited group in ~a, got ~a"
+                    what (token-describe (p-peek p))))
+  (let ((depth 0))
+    (loop
+      (let ((tok (p-peek p)))
+        (case (token-type tok)
+          (:eof (parse-error-at p tok "unterminated ~a" what))
+          ((:lparen :lbracket :lbrace :dot-lbrace) (incf depth))
+          ((:rparen :rbracket :rbrace) (decf depth))))
+      (p-next p)
+      (when (zerop depth) (return)))))
+
+(defun collect-by-example-call (p)
+  "Collect a by-example macro invocation's raw extent.
+v0.1 by-example invocations are delimited by their first top-level `{...}`
+group. A following `else { ... }` belongs to the same extent, which is the
+specific longest-match rule needed by `unless` (§10.2)."
+  (let* ((start (parser-index p))
+         (name-tok (p-next p))
+         (name (token-value name-tok))
+         (saw-main-group nil))
+    (labels ((finish ()
+               (make-node :macro_call
+                          (list name
+                                (make-token-group
+                                 (subseq (parser-tokens p) start
+                                         (parser-index p)))
+                                :by-example)
+                          :meta (tok-meta p name-tok)))
+             (need-main-group-error ()
+               (parse-error-at p (p-peek p)
+                               "by-example macro `~a` invocation needs a `{...}` group"
+                               (symbol-name name))))
+      (loop
+        (let ((tok (p-peek p)))
+          (cond
+            ((eq (token-type tok) :eof)
+             (if saw-main-group (return (finish)) (need-main-group-error)))
+            ((and saw-main-group (p-at-kw p :else))
+             (p-next p)
+             (unless (p-at p :lbrace)
+               (parse-error-at p (p-peek p)
+                               "expected `{` after `else` in by-example macro invocation, got ~a"
+                               (token-describe (p-peek p))))
+             (collect-balanced-surface-group p "by-example macro `else` arm")
+             (return (finish)))
+            (saw-main-group
+             (return (finish)))
+            ((p-at p :lbrace)
+             (collect-balanced-surface-group p "by-example macro invocation")
+             (setf saw-main-group t))
+            ((member (token-type tok) '(:lparen :lbracket :dot-lbrace))
+             (collect-balanced-surface-group p "by-example macro invocation"))
+            ((member (token-type tok)
+                     '(:semi :comma :rparen :rbracket :rbrace :fat-arrow))
+             (need-main-group-error))
+            (t (p-next p))))))))
+
 (defun parse-postfix (p)
   (let ((e (parse-primary p)))
     ;; enforestation-lite (SPEC §5.8.6): a known macro name in call position
@@ -762,12 +880,16 @@ token-group (the raw macro-call payload, SPEC §5.8.6)."
       (:float (token-value (p-next p)))
       (:string (token-value (p-next p)))
       (:ident
-       (if (and *in-quote*
-                (member (token-value tok) '(:|raw| :|inject| :|insert|))
-                (p-at p :lparen 1))
-           (parse-template-escape p)
-           (let ((tok (p-next p)))
-             (make-ident (token-value tok) :meta (tok-meta p tok)))))
+       (cond
+         ((and *in-quote*
+               (member (token-value tok) '(:|raw| :|inject| :|insert|))
+               (p-at p :lparen 1))
+          (parse-template-escape p))
+         ((macro-by-example-name-p (token-value tok))
+          (collect-by-example-call p))
+         (t
+          (let ((tok (p-next p)))
+            (make-ident (token-value tok) :meta (tok-meta p tok))))))
       (:kw
        (case (token-value tok)
          (:true (p-next p) t)
