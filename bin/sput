@@ -6,6 +6,7 @@ SPUTTER_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 export SPUTTER_ROOT
 SPUTTER_IMAGE="$SPUTTER_ROOT/bin/sput.image"
 if [ -f "$SPUTTER_IMAGE" ]; then
-  exec sbcl --core "$SPUTTER_IMAGE" -- "$@"
+  # --noinform: the host banner must never reach a user channel (I2)
+  exec sbcl --core "$SPUTTER_IMAGE" --noinform -- "$@"
 fi
 exec sbcl --script "$SPUTTER_ROOT/src/boot.lisp" "$@"
